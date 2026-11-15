@@ -1,0 +1,22 @@
+{
+  "name": "zeszyt",
+  "version": "1.0.0",
+  "scripts": {
+    "build": "esbuild src/main.js --bundle --minify --target=chrome100 --outfile=www/app.js --loader:.woff2=file --loader:.woff=file --asset-names=fonts/[name]-[hash]"
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.6.2",
+    "@capacitor/app": "^8.1.2",
+    "@capacitor/core": "^8.6.2",
+    "@capacitor/haptics": "^8.0.2",
+    "@capacitor/local-notifications": "^8.3.1",
+    "@fontsource-variable/plus-jakarta-sans": "^5.3.0",
+    "@fontsource/instrument-serif": "^5.3.0"
+  },
+  "devDependencies": {
+    "@capacitor/assets": "^4.0.0",
+    "@capacitor/cli": "^8.6.2",
+    "esbuild": "^0.28.2"
+  },
+  "private": true
+}
