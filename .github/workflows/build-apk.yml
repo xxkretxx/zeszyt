@@ -24,7 +24,8 @@ jobs:
           distribution: temurin
           java-version: 21
 
-      - uses: android-actions/setup-android@v3
+      - name: Check Android SDK
+        run: echo "ANDROID_HOME=$ANDROID_HOME" && ls $ANDROID_HOME/platforms $ANDROID_HOME/build-tools | tail -5
 
       - name: Install & build web app
         run: |
