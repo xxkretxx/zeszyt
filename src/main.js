@@ -46,7 +46,7 @@ const REMIND = [
 
 let S = null;
 const blank = () => ({
-  v: 1, name: '', theme: 'auto', accent: '#7c6cf0', apiKey: '', model: 'claude-sonnet-5-5',
+  v: 1, name: '', theme: 'auto', accent: '#7c6cf0', apiKey: '', model: 'claude-haiku-5-5', aiProvider: 'gemini', geminiKey: '', geminiModel: 'gemini-flash-latest',
   subjects: defaultSubjects(), reminders: [], notes: [], cards: {}, timetable: { 1: [], 2: [], 3: [], 4: [], 5: [] },
   grades: [], focus: {}, activity: {}, focusCfg: { work: 25, brk: 5 }, vacation: '2027-06-25', digest: true, onboarded: false,
 });
@@ -57,6 +57,8 @@ function save() {
   saveT = setTimeout(() => kvSet('state', S).catch(console.error), 250);
 }
 const subj = (id) => S.subjects.find((s) => s.id === id);
+const aiCfg = () => (S.aiProvider === 'claude' ? { provider: 'claude', key: S.apiKey, model: S.model } : { provider: 'gemini', key: S.geminiKey, model: S.geminiModel });
+const hasAI = () => !!aiCfg().key;
 const markActive = () => { S.activity[ymd()] = true; save(); };
 
 /* ======================= UTIL UI ======================= */
@@ -538,8 +540,8 @@ function newNoteSheet() {
     <div class="photos" id="n-prev" style="grid-template-columns:repeat(4,1fr);margin-bottom:14px"></div>
     <div class="field"><label>Przedmiot (opcjonalnie — AI zgadnie)</label><div class="chips" id="n-subj" style="margin-bottom:0"><button class="chip on" data-v="">Auto ✨</button>${S.subjects.map((s) => `<button class="chip" data-v="${s.id}">${s.emoji} ${esc(s.name)}</button>`).join('')}</div></div>
     <div class="field"><label>Wskazówka dla AI (opcjonalnie)</label><input class="inp" id="n-hint" placeholder="Np. skup się na datach"></div>
-    <button class="btn" id="n-go" disabled>${ic('sparkle')} ${S.apiKey ? 'Opracuj z AI' : 'Zapisz notatkę'}</button>
-    ${!S.apiKey ? `<p class="kbd-note">Żeby AI robiło streszczenia, fiszki i quizy, dodaj klucz API w <b>Więcej → Ustawienia</b>. Bez niego notatka zapisze się jako zdjęcie.</p>` : ''}`,
+    <button class="btn" id="n-go" disabled>${ic('sparkle')} ${hasAI() ? 'Opracuj z AI' : 'Zapisz notatkę'}</button>
+    ${!hasAI() ? `<p class="kbd-note">Żeby AI robiło streszczenia, fiszki i quizy, dodaj darmowy klucz Gemini w <b>Więcej → Ustawienia</b>. Bez niego notatka zapisze się jako zdjęcie.</p>` : ''}`,
   (sh, close) => {
     const add = async (files) => {
       for (const f of files) {
@@ -557,10 +559,10 @@ function newNoteSheet() {
     $('#n-go', sh).onclick = async () => {
       const hint = $('#n-hint', sh).value.trim();
       close();
-      const n = { id: uid(), title: 'Nowa notatka', subjectId, created: Date.now(), photos: [], thumb: picked[0].thumb, ai: null, status: S.apiKey ? 'pending' : 'raw', userText: '', hint };
+      const n = { id: uid(), title: 'Nowa notatka', subjectId, created: Date.now(), photos: [], thumb: picked[0].thumb, ai: null, status: hasAI() ? 'pending' : 'raw', userText: '', hint };
       for (const p of picked) { const pid = uid(); await photoSet(pid, p.full); n.photos.push(pid); }
       S.notes.unshift(n); save();
-      if (S.apiKey) processNote(n, picked.map((p) => p.full), true);
+      if (hasAI()) processNote(n, picked.map((p) => p.full), true);
       else { refreshAll(); pageNote(n.id); }
     };
   });
@@ -582,7 +584,7 @@ async function processNote(n, images, showPage) {
   try {
     if (!images) images = await Promise.all(n.photos.map(photoGet));
     const subjNames = S.subjects.map((s) => s.name);
-    const res = await summarizeNotes(S.apiKey, S.model, images.filter(Boolean), subjNames, n.hint);
+    const res = await summarizeNotes(aiCfg(), images.filter(Boolean), subjNames, n.hint);
     n.ai = {
       summary: res.summary || '', points: res.points || [], terms: res.terms || [], flashcards: (res.flashcards || []).filter((f) => f.q && f.a),
       quiz: (res.quiz || []).filter((q) => q.options?.length >= 2 && q.correct != null), text: res.text || '', emoji: res.emoji || '📝',
@@ -656,9 +658,9 @@ function pageNote(id) {
       $('[data-copy]', pane) && ($('[data-copy]', pane).onclick = async () => { try { await navigator.clipboard.writeText(a.text); toast('Skopiowano'); } catch { toast('Nie udało się skopiować'); } });
       const own = $('#own', pane); if (own) own.oninput = () => { n.userText = own.value; save(); };
       const doAsk = async (q) => {
-        if (!q) return; if (!S.apiKey) return toast('Dodaj klucz API w Ustawieniach');
+        if (!q) return; if (!hasAI()) return toast('Dodaj klucz AI w Ustawieniach');
         const ans = $('#ans', pane); ans.innerHTML = '<span class="muted">Myślę…</span>';
-        try { ans.textContent = await askAboutNote(S.apiKey, S.model, n, q); } catch (e) { ans.textContent = e.message; }
+        try { ans.textContent = await askAboutNote(aiCfg(), n, q); } catch (e) { ans.textContent = e.message; }
       };
       $$('[data-sug]', pane).forEach((b) => (b.onclick = () => { $('#askq', pane).value = b.dataset.sug; doAsk(b.dataset.sug); }));
       $('[data-ask]', pane) && ($('[data-ask]', pane).onclick = () => doAsk($('#askq', pane).value.trim()));
@@ -666,7 +668,7 @@ function pageNote(id) {
     };
     $$('[data-t]', c).forEach((b) => (b.onclick = () => { noteTab = b.dataset.t; $$('[data-t]', c).forEach((x) => x.classList.toggle('on', x === b)); pane.style.animation = 'none'; void pane.offsetWidth; pane.style.animation = ''; drawPane(); haptic(); b.scrollIntoView({ inline: 'center', behavior: 'smooth', block: 'nearest' }); }));
     $('[data-pics]', c).onclick = async () => { const d = await photoGet(n.photos[0]); d && viewer(d); };
-    $('[data-retry]', c) && ($('[data-retry]', c).onclick = () => { if (!S.apiKey) return toast('Najpierw dodaj klucz API w Ustawieniach'); processNote(n, null, true); });
+    $('[data-retry]', c) && ($('[data-retry]', c).onclick = () => { if (!hasAI()) return toast('Najpierw dodaj klucz AI w Ustawieniach'); processNote(n, null, true); });
     $('[data-edit]', c).onclick = () => editNoteSheet(n);
     drawPane();
   });
@@ -687,7 +689,7 @@ function editNoteSheet(n) {
     <div class="field"><label>Tytuł</label><input class="inp" id="e-t" value="${esc(n.title)}"></div>
     <div class="field"><label>Przedmiot</label><div class="chips" id="e-s" style="margin-bottom:0">${S.subjects.map((s) => `<button class="chip ${sid === s.id ? 'on' : ''}" data-v="${s.id}">${s.emoji} ${esc(s.name)}</button>`).join('')}</div></div>
     <button class="btn" id="e-save">${ic('check')} Zapisz</button>
-    ${n.ai && S.apiKey ? `<button class="btn ghost" id="e-redo" style="margin-top:10px">${ic('sparkle')} Opracuj ponownie</button>` : ''}
+    ${n.ai && hasAI() ? `<button class="btn ghost" id="e-redo" style="margin-top:10px">${ic('sparkle')} Opracuj ponownie</button>` : ''}
     <button class="btn danger" id="e-del" style="margin-top:10px">${ic('trash')} Usuń notatkę</button>`,
   (sh, close) => {
     $$('#e-s [data-v]', sh).forEach((b) => (b.onclick = () => { $$('#e-s [data-v]', sh).forEach((x) => x.classList.remove('on')); b.classList.add('on'); sid = b.dataset.v; }));
@@ -1059,12 +1061,7 @@ function pageSettings() {
       <div class="field"><label>Motyw</label><div class="seg" id="st-th">${[['light', 'Jasny'], ['dark', 'Ciemny'], ['auto', 'Auto']].map(([k, l]) => `<button class="${S.theme === k ? 'on' : ''}" data-v="${k}">${l}</button>`).join('')}<span class="pill"></span></div></div>
       <div class="field"><label>Kolor akcentu</label><div class="colors" id="st-ac">${ACCENTS.map(([n, cl]) => `<button class="${S.accent === cl ? 'on' : ''}" data-v="${cl}" style="--c:${cl}" aria-label="${n}"></button>`).join('')}</div></div>
       <div class="section-h"><h3>✨ AI do notatek</h3></div>
-      <div class="card">
-        <div class="field"><label>Klucz API Anthropic</label><input class="inp" id="st-k" type="password" value="${esc(S.apiKey)}" placeholder="sk-ant-…" autocomplete="off"></div>
-        <div class="field" style="margin-bottom:12px"><label>Model</label><div class="opts" id="st-m">${[['claude-haiku-5-5', 'Szybki'], ['claude-sonnet-5-5', 'Dokładny'], ['claude-opus-5-5', 'Najmocniejszy']].map(([k, l]) => `<button class="opt ${S.model === k ? 'on' : ''}" data-v="${k}">${l}</button>`).join('')}</div></div>
-        <button class="btn small" id="st-test">Sprawdź klucz</button>
-        <p class="kbd-note">Klucz zostaje tylko na Twoim telefonie. Założysz go na <a class="link" href="https://console.anthropic.com/settings/keys">console.anthropic.com</a> (płatne za użycie — jedna notatka to grosze).</p>
-      </div>
+      <div class="card" id="aicard"></div>
       <div class="section-h"><h3>Powiadomienia</h3></div>
       <div class="list">
         <button class="row" id="st-dg"><div class="ic">🌙</div><div class="main"><b>Wieczorny przegląd</b><span>o 19:00: co masz jutro</span></div><span class="switch ${S.digest ? 'on' : ''}"></span></button>
@@ -1083,22 +1080,37 @@ function pageSettings() {
     requestAnimationFrame(movePill);
     $$('[data-v]', seg).forEach((b) => (b.onclick = () => { $$('[data-v]', seg).forEach((x) => x.classList.toggle('on', x === b)); S.theme = b.dataset.v; save(); applyTheme(); movePill(); haptic(); }));
     $$('#st-ac [data-v]', c).forEach((b) => (b.onclick = () => { $$('#st-ac [data-v]', c).forEach((x) => x.classList.toggle('on', x === b)); S.accent = b.dataset.v; save(); applyTheme(); haptic(); }));
-    $$('#st-m [data-v]', c).forEach((b) => (b.onclick = () => { $$('#st-m [data-v]', c).forEach((x) => x.classList.toggle('on', x === b)); S.model = b.dataset.v; save(); haptic(); }));
-    $('#st-n', c).oninput = (e) => { S.name = e.target.value.trim(); save(); };
-    $('#st-k', c).oninput = (e) => { S.apiKey = e.target.value.trim(); save(); };
-    $('#st-v', c).onchange = (e) => { S.vacation = e.target.value || S.vacation; save(); };
-    $('#st-test', c).onclick = async (e) => {
-      const b = e.currentTarget; if (!S.apiKey) return toast('Wklej najpierw klucz');
-      b.textContent = 'Sprawdzam…';
-      try { await testKey(S.apiKey, S.model); b.textContent = 'Działa ✓'; haptic('success'); confetti(innerWidth / 2, b.getBoundingClientRect().y, 40); } catch (er) { b.textContent = 'Sprawdź klucz'; toast(er.message); haptic('warn'); }
+    const drawAI = () => {
+      const g = S.aiProvider !== 'claude', box = $('#aicard', c);
+      const models = g ? [['gemini-flash-lite-latest', 'Lite · najwięcej darmowych'], ['gemini-flash-latest', 'Flash · dokładniejszy']] : [['claude-haiku-5-5', 'Szybki · najtańszy'], ['claude-sonnet-5-5', 'Dokładny'], ['claude-opus-5-5', 'Najmocniejszy']];
+      box.innerHTML = `<div class="seg" id="st-pv"><button class="${g ? 'on' : ''}" data-v="gemini">Gemini · za darmo</button><button class="${!g ? 'on' : ''}" data-v="claude">Claude · płatny</button><span class="pill"></span></div>
+        <div class="field"><label>${g ? 'Klucz Gemini API' : 'Klucz API Anthropic'}</label><input class="inp" id="st-k" type="password" value="${esc(g ? S.geminiKey : S.apiKey)}" placeholder="${g ? 'AIza…' : 'sk-ant-…'}" autocomplete="off"></div>
+        <div class="field" style="margin-bottom:12px"><label>Model</label><div class="opts" id="st-m">${models.map(([k, l]) => `<button class="opt ${(g ? S.geminiModel : S.model) === k ? 'on' : ''}" data-v="${k}">${l}</button>`).join('')}</div></div>
+        <button class="btn small" id="st-test">Sprawdź klucz</button>
+        <p class="kbd-note">${g
+          ? `Darmowy klucz bez karty: wejdź na <a class="link" href="https://aistudio.google.com/apikey">aistudio.google.com/apikey</a>, zaloguj się kontem Google i kliknij „Create API key”. Darmowy plan ma dzienny limit zapytań — jak się skończy, apka sama przełączy się na model Lite, a limit odnawia się codziennie. Uwaga: w darmowym planie Google może używać wysłanych treści do ulepszania swoich modeli.`
+          : `Klucz z <a class="link" href="https://console.anthropic.com/settings/keys">console.anthropic.com</a> — płatne za użycie, ale model „Szybki” to ułamek grosza za notatkę.`} Klucz zostaje tylko na Twoim telefonie.</p>`;
+      const seg = $('#st-pv', box), pill = $('.pill', seg);
+      requestAnimationFrame(() => { const b = $('.on', seg); pill.style.left = b.offsetLeft + 'px'; pill.style.width = b.offsetWidth + 'px'; });
+      $$('[data-v]', seg).forEach((b) => (b.onclick = () => { S.aiProvider = b.dataset.v; save(); haptic(); drawAI(); }));
+      $$('#st-m [data-v]', box).forEach((b) => (b.onclick = () => { $$('#st-m [data-v]', box).forEach((x) => x.classList.toggle('on', x === b)); g ? (S.geminiModel = b.dataset.v) : (S.model = b.dataset.v); save(); haptic(); }));
+      $('#st-k', box).oninput = (e) => { g ? (S.geminiKey = e.target.value.trim()) : (S.apiKey = e.target.value.trim()); save(); };
+      $('#st-test', box).onclick = async (e) => {
+        const b = e.currentTarget; if (!hasAI()) return toast('Wklej najpierw klucz');
+        b.textContent = 'Sprawdzam…';
+        try { await testKey(aiCfg()); b.textContent = 'Działa ✓'; haptic('success'); confetti(innerWidth / 2, b.getBoundingClientRect().y, 40); } catch (er) { b.textContent = 'Sprawdź klucz'; toast(er.message); haptic('warn'); }
+      };
     };
+    drawAI();
+    $('#st-n', c).oninput = (e) => { S.name = e.target.value.trim(); save(); };
+    $('#st-v', c).onchange = (e) => { S.vacation = e.target.value || S.vacation; save(); };
     $('#st-dg', c).onclick = async (e) => { S.digest = !S.digest; $('.switch', e.currentTarget).classList.toggle('on', S.digest); save(); if (S.digest) await ensureNotif(); scheduleDigest(); haptic(); };
     $('#st-np', c).onclick = async () => { notifOk = null; const ok = await ensureNotif(); toast(ok ? 'Powiadomienia włączone ✓' : NATIVE ? 'Włącz je w ustawieniach telefonu' : 'Dostępne w aplikacji na Androidzie'); if (ok) { S.reminders.forEach(scheduleReminder); scheduleDigest(); } };
     $('#st-ex', c).onclick = async () => { if (!NATIVE) return; try { const r = await LocalNotifications.checkExactNotificationSetting(); if (r.exact_alarm === 'granted') toast('Już włączone ✓'); else await LocalNotifications.changeExactNotificationSetting(); } catch { toast('Niedostępne na tym telefonie'); } };
     $('#st-tn', c).onclick = async () => { if (!(await ensureNotif())) return toast('Brak zgody na powiadomienia'); await LocalNotifications.schedule({ notifications: [{ id: 3, title: '👋 Działa!', body: 'Tak będą wyglądać Twoje przypominajki.', schedule: { at: new Date(Date.now() + 5000), allowWhileIdle: true }, smallIcon: 'ic_stat_icon', iconColor: S.accent }] }); toast('Za 5 sekund… zablokuj ekran 😉'); };
-    $('#st-exp', c).onclick = async () => { const { apiKey, ...rest } = S; try { await navigator.clipboard.writeText(JSON.stringify(rest)); toast('Skopiowano kopię do schowka ✓'); } catch { toast('Nie udało się skopiować'); } };
+    $('#st-exp', c).onclick = async () => { const { apiKey, geminiKey, ...rest } = S; try { await navigator.clipboard.writeText(JSON.stringify(rest)); toast('Skopiowano kopię do schowka ✓'); } catch { toast('Nie udało się skopiować'); } };
     $('#st-imp', c).onclick = () => openSheet(`<h3>Import</h3><textarea class="inp" id="im" style="min-height:160px" placeholder="Wklej tu skopiowaną kopię…"></textarea><button class="btn" id="im-go" style="margin-top:12px">Wczytaj</button>`, (sh, close) => {
-      $('#im-go', sh).onclick = () => { try { const d = JSON.parse($('#im', sh).value); if (!d.subjects) throw 0; S = { ...blank(), ...d, apiKey: S.apiKey, onboarded: true }; save(); applyTheme(); close(); closePage(); toast('Wczytano ✓'); S.reminders.forEach(scheduleReminder); } catch { toast('To nie wygląda na kopię z Zeszytu'); haptic('warn'); } };
+      $('#im-go', sh).onclick = () => { try { const d = JSON.parse($('#im', sh).value); if (!d.subjects) throw 0; S = { ...blank(), ...d, apiKey: S.apiKey, geminiKey: S.geminiKey, onboarded: true }; save(); applyTheme(); close(); closePage(); toast('Wczytano ✓'); S.reminders.forEach(scheduleReminder); } catch { toast('To nie wygląda na kopię z Zeszytu'); haptic('warn'); } };
     });
     let armed = 0;
     $('#st-wipe', c).onclick = async (e) => {

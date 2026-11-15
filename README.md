@@ -15,7 +15,7 @@ Minimalistyczna aplikacja szkolna na Androida.
 Wejdź w **Releases**, pobierz `Zeszyt.apk` na telefon i otwórz. Za pierwszym razem trzeba zezwolić na instalację z nieznanych źródeł.
 
 ## AI
-W *Więcej → Ustawienia* wklej klucz API z console.anthropic.com. Klucz zostaje tylko na telefonie.
+Domyślnie **Gemini (darmowy)**: klucz bez karty z https://aistudio.google.com/apikey, który wklejasz w *Więcej → Ustawienia*. Gdy skończy się darmowy limit modelu Flash, apka sama przełącza się na Flash-Lite. Opcjonalnie możesz też wybrać Claude (płatny). Klucze zostają tylko na telefonie.
 
 ## Budowanie
 Każdy push na `main` buduje APK w GitHub Actions (`.github/workflows/build-apk.yml`).
