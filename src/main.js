@@ -23,13 +23,13 @@ const MONTHS = ['stycznia', 'lutego', 'marca', 'kwietnia', 'maja', 'czerwca', 'l
 const plural = (n, a, b, c) => (n === 1 ? a : n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 10 || n % 100 >= 20) ? b : c);
 
 /* ======================= STATE ======================= */
-const COLORS = ['#7c6cf0', '#e0679a', '#f08a5d', '#e9b949', '#5e9e7e', '#3b9fc4', '#4f6bed', '#a35ee0', '#8a8780', '#e5534b'];
-const ACCENTS = [['Lawenda', '#7c6cf0'], ['Szałwia', '#4f9a76'], ['Brzoskwinia', '#ec7f52'], ['Ocean', '#3384c4'], ['Róż', '#de5f95'], ['Grafit', '#3a3a40']];
+const COLORS = ['#2f6bff', '#0891b2', '#f97316', '#eab308', '#16a34a', '#0ea5e9', '#6366f1', '#64748b', '#ef4444', '#14b8a6'];
+const ACCENTS = [['Niebieski', '#2f6bff'], ['Zielony', '#16a34a'], ['Pomarańczowy', '#f97316'], ['Czerwony', '#ef4444'], ['Turkusowy', '#0891b2'], ['Grafit', '#27272a']];
 const EMOJIS = ['📘', '📐', '🧪', '🧬', '🌍', '🏛️', '🇬🇧', '🇩🇪', '💻', '⚽', '🎨', '🎵', '⚛️', '📖', '✝️', '🧠', '💼', '🔢', '🧲', '🌱', '📝', '🎭', '🏥', '⭐'];
 const defaultSubjects = () => [
-  ['Polski', '📖', '#e0679a'], ['Matematyka', '📐', '#4f6bed'], ['Angielski', '🇬🇧', '#3b9fc4'], ['Historia', '🏛️', '#e9b949'],
-  ['Biologia', '🧬', '#5e9e7e'], ['Chemia', '🧪', '#a35ee0'], ['Fizyka', '⚛️', '#f08a5d'], ['Geografia', '🌍', '#3fa672'],
-  ['Informatyka', '💻', '#7c6cf0'], ['WF', '⚽', '#8a8780'],
+  ['Polski', '📖', '#ef4444'], ['Matematyka', '📐', '#2f6bff'], ['Angielski', '🇬🇧', '#0ea5e9'], ['Historia', '🏛️', '#eab308'],
+  ['Biologia', '🧬', '#16a34a'], ['Chemia', '🧪', '#6366f1'], ['Fizyka', '⚛️', '#f97316'], ['Geografia', '🌍', '#14b8a6'],
+  ['Informatyka', '💻', '#0891b2'], ['WF', '⚽', '#64748b'],
 ].map(([name, emoji, color]) => ({ id: uid(), name, emoji, color }));
 
 const TYPES = [
@@ -46,7 +46,7 @@ const REMIND = [
 
 let S = null;
 const blank = () => ({
-  v: 1, name: '', theme: 'auto', accent: '#7c6cf0', apiKey: '', model: 'claude-haiku-5-5', aiProvider: 'gemini', geminiKey: '', geminiModel: 'gemini-flash-latest',
+  v: 1, name: '', theme: 'auto', accent: '#2f6bff', apiKey: '', model: 'claude-haiku-5-5', aiProvider: 'gemini', geminiKey: '', geminiModel: 'gemini-flash-latest',
   subjects: defaultSubjects(), reminders: [], notes: [], cards: {}, timetable: { 1: [], 2: [], 3: [], 4: [], 5: [] },
   grades: [], focus: {}, activity: {}, focusCfg: { work: 25, brk: 5 }, vacation: '2027-06-25', digest: true, onboarded: false,
 });
@@ -89,7 +89,7 @@ function confetti(x = innerWidth / 2, y = innerHeight / 2, n = 90) {
   document.body.append(c);
   const g = c.getContext('2d'); g.scale(devicePixelRatio, devicePixelRatio);
   const acc = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim();
-  const cols = [acc, '#f0a6ca', '#9be7c4', '#ffd166', '#7cc6fe'];
+  const cols = [acc, '#facc15', '#22c55e', '#38bdf8', '#f97316'];
   const ps = Array.from({ length: n }, () => {
     const a = Math.random() * Math.PI * 2, v = 4 + Math.random() * 9;
     return { x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v - 6, r: Math.random() * 6 + 3, c: cols[(Math.random() * cols.length) | 0], rot: Math.random() * 6, vr: (Math.random() - 0.5) * 0.4, s: Math.random() > 0.5 };
@@ -359,7 +359,7 @@ function viewHome(v) {
   const vac = Math.max(0, dayDiff(new Date(S.vacation + 'T00:00')));
   const recent = S.notes.slice(0, 2);
   v.innerHTML = `
-  <div class="hello"><div class="date">${fmtLong(new Date())}</div><h1 class="serif">${greet}${S.name ? ',<br><em>' + esc(S.name) + '</em>' : ''}</h1></div>
+  <div class="hello"><div class="date">${fmtLong(new Date())}</div><h1 class="serif">${greet}${S.name ? ',<br><span>' + esc(S.name) + '</span>' : ''}</h1></div>
   <div class="stagger">
     ${heroHTML()}
     <div class="stats">
@@ -1044,7 +1044,7 @@ function viewMore(v) {
     <button class="row" data-go="settings"><div class="ic">${ic('gear')}</div><div class="main"><b>Ustawienia</b><span>wygląd, AI, powiadomienia</span></div><div class="end">${ic('chev')}</div></button>
     <button class="row" data-theme><div class="ic">${ic(document.documentElement.classList.contains('dark') ? 'sun' : 'moon')}</div><div class="main"><b>Tryb ${document.documentElement.classList.contains('dark') ? 'jasny' : 'ciemny'}</b><span>przełącz szybko</span></div></button>
   </div>
-  <p class="kbd-note" style="text-align:center;margin-top:30px">Zeszyt · v1.0 · zrobione z 💜</p>`;
+  <p class="kbd-note" style="text-align:center;margin-top:30px">Zeszyt · v1.1</p>`;
   bindCommon(v);
   $('[data-theme]', v).onclick = () => { S.theme = document.documentElement.classList.contains('dark') ? 'light' : 'dark'; save(); applyTheme(); haptic(); render(); };
 }
@@ -1124,8 +1124,8 @@ function pageSettings() {
 /* ======================= ONBOARDING ======================= */
 function onboarding() {
   const o = document.createElement('div'); o.className = 'onb';
-  o.innerHTML = `<div class="art"><div class="orb"></div><div class="orb-emoji">📚</div></div>
-    <h1>Twój szkolny<br><i>zeszyt</i>.</h1>
+  o.innerHTML = `<div class="art"><div class="logo">${ic('note')}</div></div>
+    <h1>Zeszyt.</h1>
     <p>Przypominajki o sprawdzianach, notatki ze zdjęć streszczane przez AI, fiszki, quizy, plan lekcji i oceny — w jednym miejscu.</p>
     <input class="inp" id="ob-n" placeholder="Jak masz na imię?" style="margin-bottom:12px">
     <button class="btn" id="ob-go">Zaczynamy →</button>`;
@@ -1143,6 +1143,7 @@ function onboarding() {
 async function boot() {
   try { S = await kvGet('state'); } catch {}
   S = { ...blank(), ...(S || {}) };
+  if (['#7c6cf0', '#de5f95', '#4f9a76', '#ec7f52', '#3384c4', '#3a3a40'].includes(S.accent)) S.accent = '#2f6bff';
   applyTheme();
   buildShell();
   render(true);
