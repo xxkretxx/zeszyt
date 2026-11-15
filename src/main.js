@@ -25,12 +25,16 @@ const plural = (n, a, b, c) => (n === 1 ? a : n % 10 >= 2 && n % 10 <= 4 && (n %
 /* ======================= STATE ======================= */
 const COLORS = ['#2f6bff', '#0891b2', '#f97316', '#eab308', '#16a34a', '#0ea5e9', '#6366f1', '#64748b', '#ef4444', '#14b8a6'];
 const ACCENTS = [['Niebieski', '#2f6bff'], ['Zielony', '#16a34a'], ['Pomarańczowy', '#f97316'], ['Czerwony', '#ef4444'], ['Turkusowy', '#0891b2'], ['Grafit', '#27272a']];
-const EMOJIS = ['📘', '📐', '🧪', '🧬', '🌍', '🏛️', '🇬🇧', '🇩🇪', '💻', '⚽', '🎨', '🎵', '⚛️', '📖', '✝️', '🧠', '💼', '🔢', '🧲', '🌱', '📝', '🎭', '🏥', '⭐'];
-const defaultSubjects = () => [
-  ['Polski', '📖', '#ef4444'], ['Matematyka', '📐', '#2f6bff'], ['Angielski', '🇬🇧', '#0ea5e9'], ['Historia', '🏛️', '#eab308'],
-  ['Biologia', '🧬', '#16a34a'], ['Chemia', '🧪', '#6366f1'], ['Fizyka', '⚛️', '#f97316'], ['Geografia', '🌍', '#14b8a6'],
-  ['Informatyka', '💻', '#0891b2'], ['WF', '⚽', '#64748b'],
-].map(([name, emoji, color]) => ({ id: uid(), name, emoji, color }));
+const EMOJIS = ['📘', '🚑', '❤️‍🩹', '⚖️', '🇪🇸', '🇫🇷', '🔧', '🤔', '🧭', '🛠️', '📐', '🧪', '🧬', '🌍', '🏛️', '🇬🇧', '🇩🇪', '💻', '⚽', '🎨', '🎵', '⚛️', '📖', '✝️', '🧠', '💼', '🔢', '🧲', '🌱', '📝', '🎭', '🏥', '⭐'];
+const SUBJECT_LIST = [
+  ['Polski', '📖'], ['Matematyka', '📐'], ['Angielski', '🇬🇧'], ['Niemiecki', '🇩🇪'], ['Hiszpański', '🇪🇸'], ['Francuski', '🇫🇷'], ['Rosyjski', '🇷🇺'], ['Włoski', '🇮🇹'], ['Łacina', '🏺'],
+  ['Historia', '🏛️'], ['HiT', '📰'], ['WOS', '⚖️'], ['Edukacja obywatelska', '🗳️'], ['Biznes i zarządzanie', '💼'], ['Podstawy przedsiębiorczości', '📈'],
+  ['Biologia', '🧬'], ['Chemia', '🧪'], ['Fizyka', '⚛️'], ['Geografia', '🌍'], ['Przyroda', '🌱'], ['Astronomia', '🔭'],
+  ['Informatyka', '💻'], ['Technika', '🔧'], ['EDB', '🚑'], ['Edukacja zdrowotna', '❤️‍🩹'], ['WDŻ', '👪'],
+  ['WF', '⚽'], ['Plastyka', '🎨'], ['Muzyka', '🎵'], ['Wiedza o kulturze', '🎭'], ['Historia sztuki', '🖼️'], ['Filozofia', '🤔'],
+  ['Religia', '✝️'], ['Etyka', '🧭'], ['Godzina wychowawcza', '🏫'], ['Doradztwo zawodowe', '🧑‍💼'], ['Przedmioty zawodowe', '🛠️'], ['Zajęcia dodatkowe', '⭐'],
+];
+const defaultSubjects = () => SUBJECT_LIST.map(([name, emoji], i) => ({ id: uid(), name, emoji, color: COLORS[i % COLORS.length] }));
 
 const TYPES = [
   { id: 'test', name: 'Sprawdzian', emoji: '📝' },
@@ -48,7 +52,7 @@ let S = null;
 const blank = () => ({
   v: 1, name: '', theme: 'auto', accent: '#2f6bff', apiKey: '', model: 'claude-haiku-5-5', aiProvider: 'gemini', geminiKey: '', geminiModel: 'gemini-flash-latest',
   subjects: defaultSubjects(), reminders: [], notes: [], cards: {}, timetable: { 1: [], 2: [], 3: [], 4: [], 5: [] },
-  grades: [], focus: {}, activity: {}, focusCfg: { work: 25, brk: 5 }, vacation: '2027-06-25', digest: true, onboarded: false,
+  grades: [], subjVer: 2, focus: {}, activity: {}, focusCfg: { work: 25, brk: 5 }, vacation: '2027-06-25', digest: true, onboarded: false,
 });
 
 let saveT;
@@ -58,6 +62,15 @@ function save() {
 }
 const subj = (id) => S.subjects.find((s) => s.id === id);
 const aiCfg = () => (S.aiProvider === 'claude' ? { provider: 'claude', key: S.apiKey, model: S.model } : { provider: 'gemini', key: S.geminiKey, model: S.geminiModel });
+function subjOrder() {
+  const score = {};
+  const bump = (id, k) => id && (score[id] = (score[id] || 0) + k);
+  Object.values(S.timetable).flat().forEach((l) => bump(l.subjectId, 3));
+  S.grades.forEach((g) => bump(g.subjectId, 2));
+  S.notes.forEach((n) => bump(n.subjectId, 2));
+  S.reminders.forEach((r) => bump(r.subjectId, 1));
+  return S.subjects.map((s, i) => ({ s, i })).sort((a, b) => (score[b.s.id] || 0) - (score[a.s.id] || 0) || a.i - b.i).map((x) => x.s);
+}
 const hasAI = () => !!aiCfg().key;
 const markActive = () => { S.activity[ymd()] = true; save(); };
 
@@ -466,7 +479,7 @@ function reminderSheet(existing, preset = {}) {
   openSheet(`<h3>${existing ? 'Edytuj' : 'Nowa przypominajka'}</h3>
     <div class="field"><input class="inp big" id="r-title" placeholder="Np. Sprawdzian z fotosyntezy" value="${esc(r.title)}" maxlength="80"></div>
     <div class="field"><label>Typ</label><div class="opts" id="r-type">${TYPES.map((t) => `<button class="opt ${r.type === t.id ? 'on' : ''}" data-v="${t.id}">${t.emoji} ${t.name}</button>`).join('')}</div></div>
-    <div class="field"><label>Przedmiot</label><div class="chips" id="r-subj" style="margin-bottom:0"><button class="chip ${!r.subjectId ? 'on' : ''}" data-v="">Brak</button>${S.subjects.map((s) => `<button class="chip ${r.subjectId === s.id ? 'on' : ''}" data-v="${s.id}">${s.emoji} ${esc(s.name)}</button>`).join('')}</div></div>
+    <div class="field"><label>Przedmiot</label><div class="chips" id="r-subj" style="margin-bottom:0"><button class="chip ${!r.subjectId ? 'on' : ''}" data-v="">Brak</button>${subjOrder().map((s) => `<button class="chip ${r.subjectId === s.id ? 'on' : ''}" data-v="${s.id}">${s.emoji} ${esc(s.name)}</button>`).join('')}</div></div>
     <div class="field"><label>Kiedy</label><div class="opts" id="r-qd" style="margin-bottom:10px">${quickDates.map(([n, k]) => `<button class="opt" data-k="${k}">${n}</button>`).join('')}</div>
       <div class="row2"><input class="inp" type="date" id="r-date" value="${r.due.slice(0, 10)}"><input class="inp" type="time" id="r-time" value="${r.due.slice(11, 16)}"></div></div>
     <div class="field"><label>Przypomnij</label><div class="opts" id="r-rem">${REMIND.map((x) => `<button class="opt ${r.remind === x.id ? 'on' : ''}" data-v="${x.id}">${x.name}</button>`).join('')}</div></div>
@@ -538,7 +551,7 @@ function newNoteSheet() {
       <label class="btn ghost" style="height:96px;flex-direction:column;gap:6px">${ic('image')}<span style="font-size:14px">Z galerii</span><input type="file" accept="image/*" multiple hidden id="n-gal"></label>
     </div>
     <div class="photos" id="n-prev" style="grid-template-columns:repeat(4,1fr);margin-bottom:14px"></div>
-    <div class="field"><label>Przedmiot (opcjonalnie — AI zgadnie)</label><div class="chips" id="n-subj" style="margin-bottom:0"><button class="chip on" data-v="">Auto ✨</button>${S.subjects.map((s) => `<button class="chip" data-v="${s.id}">${s.emoji} ${esc(s.name)}</button>`).join('')}</div></div>
+    <div class="field"><label>Przedmiot (opcjonalnie — AI zgadnie)</label><div class="chips" id="n-subj" style="margin-bottom:0"><button class="chip on" data-v="">Auto ✨</button>${subjOrder().map((s) => `<button class="chip" data-v="${s.id}">${s.emoji} ${esc(s.name)}</button>`).join('')}</div></div>
     <div class="field"><label>Wskazówka dla AI (opcjonalnie)</label><input class="inp" id="n-hint" placeholder="Np. skup się na datach"></div>
     <button class="btn" id="n-go" disabled>${ic('sparkle')} ${hasAI() ? 'Opracuj z AI' : 'Zapisz notatkę'}</button>
     ${!hasAI() ? `<p class="kbd-note">Żeby AI robiło streszczenia, fiszki i quizy, dodaj darmowy klucz Gemini w <b>Więcej → Ustawienia</b>. Bez niego notatka zapisze się jako zdjęcie.</p>` : ''}`,
@@ -687,7 +700,7 @@ function editNoteSheet(n) {
   let sid = n.subjectId;
   openSheet(`<h3>Edytuj notatkę</h3>
     <div class="field"><label>Tytuł</label><input class="inp" id="e-t" value="${esc(n.title)}"></div>
-    <div class="field"><label>Przedmiot</label><div class="chips" id="e-s" style="margin-bottom:0">${S.subjects.map((s) => `<button class="chip ${sid === s.id ? 'on' : ''}" data-v="${s.id}">${s.emoji} ${esc(s.name)}</button>`).join('')}</div></div>
+    <div class="field"><label>Przedmiot</label><div class="chips" id="e-s" style="margin-bottom:0">${subjOrder().map((s) => `<button class="chip ${sid === s.id ? 'on' : ''}" data-v="${s.id}">${s.emoji} ${esc(s.name)}</button>`).join('')}</div></div>
     <button class="btn" id="e-save">${ic('check')} Zapisz</button>
     ${n.ai && hasAI() ? `<button class="btn ghost" id="e-redo" style="margin-top:10px">${ic('sparkle')} Opracuj ponownie</button>` : ''}
     <button class="btn danger" id="e-del" style="margin-top:10px">${ic('trash')} Usuń notatkę</button>`,
@@ -876,10 +889,11 @@ const avgColor = (a) => (a == null ? 'var(--surface-2)' : a >= 4.75 ? '#3fa672' 
 function pageGrades() {
   openPage('Oceny', (c) => {
     const avg = overallAvg();
-    const subs = S.subjects.map((s) => ({ s, a: subjAvg(s.id), gs: S.grades.filter((g) => g.subjectId === s.id) }));
+    const subs = subjOrder().map((s) => ({ s, a: subjAvg(s.id), gs: S.grades.filter((g) => g.subjectId === s.id) }));
     c.innerHTML = `<div class="big-avg"><b id="ga">${avg == null ? '–' : '0'}</b><span>średnia ogólna</span></div>
       <p class="kbd-note" style="text-align:center;margin-bottom:18px">Dotknij przedmiotu, żeby dodać ocenę</p>
-      <div class="list stagger">${subs.map(({ s, a, gs }) => `<button class="row" data-sg="${s.id}"><div class="ic" style="background:${s.color}22">${s.emoji}</div><div class="main"><b>${esc(s.name)}</b><div class="grades-line">${gs.length ? gs.slice(-8).map((g) => `<span class="g" style="height:22px;min-width:22px;font-size:11px">${gradeLabel(g.value)}</span>`).join('') : '<span>brak ocen</span>'}</div></div><div class="avg-pill" style="background:${a == null ? 'var(--surface-2)' : avgColor(a)};color:${a == null ? 'var(--muted)' : '#fff'}">${a == null ? '–' : a.toFixed(2).replace('.', ',')}</div></button>`).join('')}</div>`;
+      ${(() => { const used = subs.filter((x) => x.gs.length), rest = subs.filter((x) => !x.gs.length); const row = ({ s, a, gs }) => `<button class="row" data-sg="${s.id}"><div class="ic" style="background:${s.color}22">${s.emoji}</div><div class="main"><b>${esc(s.name)}</b><div class="grades-line">${gs.length ? gs.slice(-8).map((g) => `<span class="g" style="height:22px;min-width:22px;font-size:11px">${gradeLabel(g.value)}</span>`).join('') : '<span>brak ocen</span>'}</div></div><div class="avg-pill" style="background:${a == null ? 'var(--surface-2)' : avgColor(a)};color:${a == null ? 'var(--muted)' : '#fff'}">${a == null ? '–' : a.toFixed(2).replace('.', ',')}</div></button>`;
+        return `${used.length ? `<div class="list stagger">${used.map(row).join('')}</div>` : ''}<div class="group-h" style="margin-top:22px"><span>${used.length ? 'Pozostałe przedmioty' : 'Przedmioty'}</span><span>${rest.length}</span></div><div class="list">${rest.map(row).join('')}</div>`; })()}`;
     if (avg != null) countUp($('#ga', c), avg, 2);
     $$('[data-sg]', c).forEach((b) => (b.onclick = () => pageSubjectGrades(b.dataset.sg)));
   });
@@ -927,7 +941,7 @@ function calcSheet(subjectId) {
   let sid = subjectId || S.subjects.find((s) => S.grades.some((g) => g.subjectId === s.id))?.id || S.subjects[0]?.id;
   let target = 4.5, w = 3;
   openSheet(`<h3>Ile muszę dostać?</h3>
-    <div class="field"><label>Przedmiot</label><div class="chips" id="c-s" style="margin-bottom:0">${S.subjects.map((s) => `<button class="chip ${sid === s.id ? 'on' : ''}" data-v="${s.id}">${s.emoji} ${esc(s.name)}</button>`).join('')}</div></div>
+    <div class="field"><label>Przedmiot</label><div class="chips" id="c-s" style="margin-bottom:0">${subjOrder().map((s) => `<button class="chip ${sid === s.id ? 'on' : ''}" data-v="${s.id}">${s.emoji} ${esc(s.name)}</button>`).join('')}</div></div>
     <div class="field"><label>Chcę mieć średnią</label><div class="opts" id="c-t">${[2.5, 3, 3.5, 4, 4.5, 4.75, 5, 5.5].map((v) => `<button class="opt ${target === v ? 'on' : ''}" data-v="${v}">${String(v).replace('.', ',')}</button>`).join('')}</div></div>
     <div class="field"><label>Waga następnej oceny</label><div class="opts" id="c-w">${[1, 2, 3, 4, 5].map((v) => `<button class="opt ${w === v ? 'on' : ''}" data-v="${v}" style="width:46px;justify-content:center">${v}</button>`).join('')}</div></div>
     <div class="card" style="text-align:center"><div class="muted" style="font-size:13px;font-weight:600" id="c-now"></div><div class="serif" style="font-size:56px;line-height:1.1;color:var(--accent)" id="c-r"></div><div style="font-size:14px" id="c-m"></div></div>`,
@@ -976,7 +990,7 @@ function lessonSheet(day, existing) {
   const st = last ? fromMin(toMin(last.end) + 10) : '08:00';
   const l = existing ? { ...existing } : { id: uid(), subjectId: S.subjects[0]?.id, start: st, end: fromMin(toMin(st) + 45), room: '' };
   openSheet(`<h3>${existing ? 'Edytuj lekcję' : 'Nowa lekcja'} · ${DAYS[day]}</h3>
-    <div class="field"><label>Przedmiot</label><div class="opts" id="l-s">${S.subjects.map((s) => `<button class="opt ${l.subjectId === s.id ? 'on' : ''}" data-v="${s.id}">${s.emoji} ${esc(s.name)}</button>`).join('')}</div></div>
+    <div class="field"><label>Przedmiot</label><div class="opts" id="l-s">${subjOrder().map((s) => `<button class="opt ${l.subjectId === s.id ? 'on' : ''}" data-v="${s.id}">${s.emoji} ${esc(s.name)}</button>`).join('')}</div></div>
     <div class="field"><label>Godziny</label><div class="row2"><input class="inp" type="time" id="l-a" value="${l.start}"><input class="inp" type="time" id="l-b" value="${l.end}"></div></div>
     <div class="field"><label>Sala</label><input class="inp" id="l-r" value="${esc(l.room)}" placeholder="Np. 104"></div>
     <button class="btn" id="l-save">${ic('check')} Zapisz</button>
@@ -1143,6 +1157,7 @@ function onboarding() {
 async function boot() {
   try { S = await kvGet('state'); } catch {}
   S = { ...blank(), ...(S || {}) };
+  if ((S.subjVer || 1) < 2) { SUBJECT_LIST.forEach(([name, emoji], i) => { if (!S.subjects.some((x) => x.name.toLowerCase() === name.toLowerCase())) S.subjects.push({ id: uid(), name, emoji, color: COLORS[i % COLORS.length] }); }); S.subjVer = 2; save(); }
   if (['#7c6cf0', '#de5f95', '#4f9a76', '#ec7f52', '#3384c4', '#3a3a40'].includes(S.accent)) S.accent = '#2f6bff';
   applyTheme();
   buildShell();
