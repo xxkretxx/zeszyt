@@ -84,15 +84,95 @@ async function haptic(kind = 'light') {
   } catch {}
 }
 
-let toastT;
+/* ---- Dynamic Island: live activity pill under the status bar (below the front camera) ---- */
+const ISL = { el: null, c: null, toast: null, toastT: null, open: false, key: '', state: 'hidden', acts: [] };
 function toast(msg, action, fn) {
-  let t = $('.toast');
-  if (!t) { t = document.createElement('div'); t.className = 'toast'; document.body.append(t); }
-  t.innerHTML = `<span>${esc(msg)}</span>${action ? `<button>${esc(action)}</button>` : ''}`;
-  if (action) t.querySelector('button').onclick = () => { fn(); t.classList.remove('in'); };
-  requestAnimationFrame(() => t.classList.add('in'));
-  clearTimeout(toastT);
-  toastT = setTimeout(() => t.classList.remove('in'), action ? 4000 : 2400);
+  clearTimeout(ISL.toastT);
+  ISL.toast = { msg, action, fn };
+  ISL.open = false;
+  islandRender();
+  ISL.toastT = setTimeout(() => { ISL.toast = null; islandRender(); }, action ? 4200 : 2600);
+}
+function islandInit() {
+  const el = document.createElement('div'); el.id = 'island'; el.className = 'island hidden';
+  el.innerHTML = '<div class="isl-c"></div>';
+  document.body.append(el);
+  ISL.el = el; ISL.c = el.firstChild;
+  el.addEventListener('click', (e) => {
+    const b = e.target.closest('[data-ia]');
+    if (b) { e.stopPropagation(); const i = +b.dataset.ia; if (ISL.toast && i === -1) { const f = ISL.toast.fn; ISL.toast = null; f && f(); } else ISL.acts[i]?.(); ISL.open = false; islandRender(); return; }
+    if (ISL.toast) { ISL.toast = null; islandRender(); return; }
+    if (ISL.state === 'compact' || ISL.state === 'open') { ISL.open = !ISL.open; haptic(); islandRender(); }
+  });
+  document.addEventListener('pointerdown', (e) => { if (ISL.open && !el.contains(e.target)) { ISL.open = false; islandRender(); } }, true);
+  setInterval(islandRender, 1000);
+}
+function liveActivity() {
+  const now = new Date();
+  if (F.running) {
+    const tot = (F.mode === 'work' ? S.focusCfg.work : S.focusCfg.brk) * 60, left = Math.max(0, Math.round((F.endAt - Date.now()) / 1000));
+    const t = `${pad(Math.floor(left / 60))}:${pad(left % 60)}`;
+    return { icon: ic('timer'), color: '#fb923c', text: F.mode === 'work' ? 'Fokus' : 'Przerwa', val: t, prog: 1 - left / tot,
+      title: F.mode === 'work' ? 'Skupienie trwa' : 'Przerwa', sub: `koniec o ${hm(new Date(F.endAt))}`, acts: [['Pauza', focusStop], ['Otwórz', pageFocus]] };
+  }
+  const pend = S.notes.find((n) => n.status === 'pending');
+  if (pend) return { icon: ic('sparkle'), color: '#60a5fa', text: 'AI czyta notatkę', val: '<span class="isl-spin"></span>', title: 'Analizuję zdjęcia', sub: 'streszczenie, fiszki i quiz za chwilę', acts: [] };
+  const c = currentLessonInfo();
+  if (c.kind === 'now') {
+    const s = subj(c.l.subjectId) || { name: '?', emoji: '📘' }, [a, b] = lessonNo(now.getDay(), c.l);
+    const nx = c.next && subj(c.next.subjectId);
+    return { icon: `<span class="isl-emo">${s.emoji}</span>`, color: '#fff', text: s.name, val: `${c.left} min`, prog: c.prog,
+      title: `${s.emoji} ${s.name}`, sub: `${a === b ? a : a + '–' + b}. lekcja · ${c.l.start}–${c.l.end}${c.l.room ? ' · sala ' + c.l.room : ''}`,
+      foot: nx ? `Potem: ${nx.emoji} ${nx.name} o ${c.next.start}` : 'To ostatnia lekcja dzisiaj 🎉', acts: [['Plan', pageTimetable]] };
+  }
+  if (c.kind === 'next' && c.in <= 20) {
+    const s = subj(c.l.subjectId) || { name: '?', emoji: '📘' };
+    return { icon: ic('bell'), color: '#4ade80', text: c.isBreak ? 'Przerwa' : 'Za chwilę', val: `${c.in} min`,
+      title: `Następna: ${s.emoji} ${s.name}`, sub: `start ${c.l.start}${c.l.room ? ' · sala ' + c.l.room : ''}`, acts: [['Plan', pageTimetable]] };
+  }
+  const r = S.reminders.filter((x) => !x.done && new Date(x.due) > now && new Date(x.due) - now < 3 * 3600e3).sort((x, y) => x.due.localeCompare(y.due))[0];
+  if (r) { const t = TYPES.find((x) => x.id === r.type) || TYPES[4]; return { icon: `<span class="isl-emo">${t.emoji}</span>`, color: '#fff', text: r.title, val: relWhen(new Date(r.due)), title: `${t.emoji} ${r.title}`, sub: `${t.name} · ${relWhen(new Date(r.due), true)}`, acts: [['Zrobione ✓', () => { r.done = true; r.doneAt = Date.now(); cancelReminder(r); markActive(); save(); confetti(innerWidth / 2, 60, 50); haptic('success'); refreshAll(); }], ['Otwórz', () => reminderSheet(r)]] }; }
+  return null;
+}
+function islandRender() {
+  const el = ISL.el; if (!el) return;
+  let state = 'hidden', html = '', acts = [];
+  if (ISL.toast) {
+    state = 'toast';
+    html = `<div class="isl-toast"><span class="isl-dot"></span><span class="t">${esc(ISL.toast.msg)}</span>${ISL.toast.action ? `<button data-ia="-1">${esc(ISL.toast.action)}</button>` : ''}</div>`;
+  } else {
+    const a = !pages.length && !sheetStack.length && S?.onboarded ? liveActivity() : null;
+    if (a && ISL.open) {
+      state = 'open'; acts = a.acts.map((x) => x[1]);
+      html = `<div class="isl-open"><div class="r1"><div><div class="tt">${esc(a.title)}</div><div class="ss">${esc(a.sub)}</div></div><div class="vv" style="color:${a.color}">${a.val}</div></div>
+        ${a.prog != null ? `<div class="isl-bar"><i style="width:${(a.prog * 100).toFixed(1)}%"></i></div>` : ''}${a.foot ? `<div class="ss" style="margin-top:10px">${esc(a.foot)}</div>` : ''}
+        ${a.acts.length ? `<div class="isl-acts">${a.acts.map((x, i) => `<button data-ia="${i}">${esc(x[0])}</button>`).join('')}</div>` : ''}</div>`;
+    } else if (a) {
+      state = 'compact'; ISL.open = false;
+      html = `<div class="isl-compact"><span class="i" style="color:${a.color}">${a.icon}</span><span class="t">${esc(a.text)}</span><span class="v" style="color:${a.color}">${a.val}</span></div>`;
+    } else ISL.open = false;
+  }
+  document.body.classList.toggle('has-island', state === 'compact' || state === 'open');
+  const key = state + '|' + html;
+  if (key === ISL.key) {
+    // keep the pill sized to its content (fonts/emoji can load after first measure)
+    if (state !== 'hidden' && ISL.c.style.opacity !== '0') { const w = ISL.c.offsetWidth + 'px', h = ISL.c.offsetHeight + 'px'; if (el.style.width !== w) el.style.width = w; if (el.style.height !== h) el.style.height = h; }
+    return;
+  }
+  const morph = state !== ISL.state;
+  ISL.key = key; ISL.state = state; ISL.acts = acts;
+  if (state === 'hidden') { el.className = 'island hidden'; return; }
+  const apply = () => {
+    ISL.c.innerHTML = html;
+    const maxW = innerWidth - 24;
+    if (state === 'open') ISL.c.style.width = Math.min(maxW, 420) + 'px';
+    else { ISL.c.style.width = 'max-content'; if (ISL.c.offsetWidth > maxW) ISL.c.style.width = maxW + 'px'; }
+    el.style.width = ISL.c.offsetWidth + 'px'; el.style.height = ISL.c.offsetHeight + 'px';
+    el.className = 'island ' + state;
+    ISL.c.style.opacity = 1;
+  };
+  if (morph && el.className !== 'island hidden') { ISL.c.style.opacity = 0; setTimeout(apply, 130); if (state === 'toast' || state === 'open') haptic(); }
+  else apply();
 }
 
 function confetti(x = innerWidth / 2, y = innerHeight / 2, n = 90) {
@@ -140,6 +220,7 @@ function openSheet(html, mount) {
   requestAnimationFrame(() => { scrim.classList.add('in'); sh.classList.add('in'); });
   const close = () => {
     sheetStack = sheetStack.filter((x) => x !== close);
+    islandRender();
     scrim.classList.remove('in'); sh.classList.remove('in');
     setTimeout(() => { scrim.remove(); sh.remove(); }, 450);
   };
@@ -156,7 +237,9 @@ function openSheet(html, mount) {
     if (dy > 110) close(); y0 = null;
   });
   sheetStack.push(close);
+  islandRender();
   mount && mount(sh, close);
+  $$('.chips', sh).forEach((row) => { const on = $('.on', row); if (on) row.scrollLeft = on.offsetLeft - 20; });
   haptic();
   return close;
 }
@@ -177,6 +260,7 @@ function openPage(title, render, action) {
   };
   obj.refresh();
   pages.push(obj);
+  islandRender();
   requestAnimationFrame(() => requestAnimationFrame(() => p.classList.add('in')));
   haptic();
   return obj;
@@ -188,6 +272,7 @@ function closePage() {
   setTimeout(() => o.el.remove(), 460);
   pages.at(-1)?.refresh();
   if (!pages.length) render();
+  islandRender();
 }
 
 /* ======================= THEME ======================= */
@@ -195,7 +280,11 @@ const mq = matchMedia('(prefers-color-scheme: dark)');
 function applyTheme() {
   const dark = S.theme === 'dark' || (S.theme === 'auto' && mq.matches);
   document.documentElement.classList.toggle('dark', dark);
-  document.documentElement.style.setProperty('--accent', S.accent);
+  // very dark accents (Grafit) are invisible on a dark background → swap for light grey
+  const hx = S.accent.replace('#', ''), lum = (0.2126 * parseInt(hx.slice(0, 2), 16) + 0.7152 * parseInt(hx.slice(2, 4), 16) + 0.0722 * parseInt(hx.slice(4, 6), 16)) / 255;
+  const acc = dark && lum < 0.25 ? '#e4e4e7' : S.accent;
+  document.documentElement.style.setProperty('--accent', acc);
+  document.documentElement.style.setProperty('--accent-ink', dark && lum < 0.25 ? '#0c0d10' : '#fff');
   if (NATIVE) SystemBars.setStyle({ style: dark ? SystemBarsStyle.Dark : SystemBarsStyle.Light }).catch(() => {});
 }
 mq.addEventListener?.('change', () => S && applyTheme());
@@ -249,7 +338,7 @@ async function scheduleDigest() {
     const at = new Date(); at.setHours(19, 0, 0, 0); if (at <= new Date()) at.setDate(at.getDate() + 1);
     const tom = new Date(at); tom.setDate(tom.getDate() + 1);
     const items = S.reminders.filter((r) => !r.done && r.due.slice(0, 10) === ymd(tom));
-    const lessons = (S.timetable[tom.getDay()] || []).length;
+    const lessons = lessonCount(tom.getDay());
     let body = items.length ? `Jutro: ${items.map((r) => r.title).slice(0, 3).join(', ')}${items.length > 3 ? '…' : ''}` : 'Na jutro nic nie ma w przypominajkach. Spakuj plecak 🎒';
     if (lessons) body += ` · ${lessons} ${plural(lessons, 'lekcja', 'lekcje', 'lekcji')}`;
     await LocalNotifications.schedule({ notifications: [{ id: 5, title: '🌙 Wieczorny przegląd', body, schedule: { at, allowWhileIdle: true }, smallIcon: 'ic_stat_icon', iconColor: S.accent }] });
@@ -329,6 +418,11 @@ const QUOTES = [
   ['Spokojnie. Jedna rzecz naraz.', 'oddech'],
   ['Nie porównuj swojego rozdziału 1 z czyimś rozdziałem 20.', 'perspektywa'],
 ];
+const units = (l) => (l.double ? 2 : 1);
+const dayLessons = (d) => [...(S.timetable[d] || [])].sort((a, b) => toMin(a.start) - toMin(b.start));
+const lessonCount = (d) => dayLessons(d).reduce((a, l) => a + units(l), 0);
+function lessonNo(d, l) { let n = 0; for (const x of dayLessons(d)) { if (x.id === l.id) return [n + 1, n + units(x)]; n += units(x); } return [n + 1, n + 1]; }
+const noLabel = ([a, b]) => (a === b ? `${a}.` : `${a}–${b}.`);
 function currentLessonInfo() {
   const now = new Date(), d = now.getDay(), m = now.getHours() * 60 + now.getMinutes();
   const today = [...(S.timetable[d] || [])].sort((a, b) => toMin(a.start) - toMin(b.start));
@@ -340,7 +434,7 @@ function currentLessonInfo() {
   if (nxt) return { kind: 'next', l: nxt, in: toMin(nxt.start) - m, isBreak: today.some((l) => toMin(l.end) <= m) };
   for (let i = 1; i <= 7; i++) {
     const dd = (d + i) % 7, ls = [...(S.timetable[dd] || [])].sort((a, b) => toMin(a.start) - toMin(b.start));
-    if (ls.length) return { kind: 'free', l: ls[0], day: dd, i, count: ls.length };
+    if (ls.length) return { kind: 'free', l: ls[0], day: dd, i, count: lessonCount(dd) };
   }
   return { kind: 'none' };
 }
@@ -354,9 +448,15 @@ function heroHTML() {
   const c = currentLessonInfo();
   if (c.kind === 'none') return `<button class="hero press" data-go="timetable" style="width:100%;text-align:left"><div class="label">Plan lekcji</div><div class="big">Ustaw swój plan</div><div class="meta">Zobaczysz tu, co masz teraz i co dalej →</div></button>`;
   const s = subj(c.l.subjectId) || { name: '?', emoji: '📘' };
-  if (c.kind === 'now') return `<div class="hero"><div class="label"><span class="live"></span>Teraz · do ${c.l.end}</div><div class="big">${s.emoji} ${esc(s.name)}</div><div class="meta">${c.l.room ? 'sala ' + esc(c.l.room) + ' · ' : ''}zostało ${c.left} min${c.next ? ` · potem ${esc(subj(c.next.subjectId)?.name || '')}` : ' · ostatnia lekcja 🎉'}</div><div class="bar"><i style="width:${(c.prog * 100).toFixed(1)}%"></i></div></div>`;
-  if (c.kind === 'next') return `<div class="hero"><div class="label">${c.isBreak ? 'Przerwa · następna' : 'Pierwsza lekcja'}</div><div class="big">${s.emoji} ${esc(s.name)}</div><div class="meta">za ${c.in < 60 ? c.in + ' min' : Math.floor(c.in / 60) + ' h ' + (c.in % 60) + ' min'} · ${c.l.start}${c.l.room ? ' · sala ' + esc(c.l.room) : ''}</div></div>`;
+  if (c.kind === 'now') return `<div class="hero"><div class="label"><span class="live"></span>Teraz · ${noLabel(lessonNo(new Date().getDay(), c.l))} lekcja · do ${c.l.end}</div><div class="big">${s.emoji} ${esc(s.name)}</div><div class="meta">${c.l.room ? 'sala ' + esc(c.l.room) + ' · ' : ''}zostało ${c.left} min${c.next ? ` · potem ${esc(subj(c.next.subjectId)?.name || '')}` : ' · ostatnia lekcja 🎉'}</div><div class="bar"><i style="width:${(c.prog * 100).toFixed(1)}%"></i></div></div>`;
+  if (c.kind === 'next') return `<div class="hero"><div class="label">${c.isBreak ? 'Przerwa · następna' : 'Pierwsza lekcja'} · ${noLabel(lessonNo(new Date().getDay(), c.l))} lekcja</div><div class="big">${s.emoji} ${esc(s.name)}</div><div class="meta">za ${c.in < 60 ? c.in + ' min' : Math.floor(c.in / 60) + ' h ' + (c.in % 60) + ' min'} · ${c.l.start}${c.l.room ? ' · sala ' + esc(c.l.room) : ''}</div></div>`;
   return `<div class="hero"><div class="label">Na dziś koniec 🎉</div><div class="big">${c.i === 1 ? 'Jutro' : DAYS_FULL[c.day][0].toUpperCase() + DAYS_FULL[c.day].slice(1)} ${s.emoji}</div><div class="meta">${c.count} ${plural(c.count, 'lekcja', 'lekcje', 'lekcji')} · start ${c.l.start} (${esc(s.name)})</div></div>`;
+}
+function todayStripHTML() {
+  const d = new Date().getDay(), ls = dayLessons(d); if (!ls.length) return '';
+  const m = new Date().getHours() * 60 + new Date().getMinutes();
+  return `<div class="section-h"><h3>Dziś w planie</h3><span class="muted" style="font-size:13px;font-weight:600">${lessonCount(d)} ${plural(lessonCount(d), 'lekcja', 'lekcje', 'lekcji')} · ${ls[0].start}–${ls.at(-1).end}</span></div>
+  <div class="strip" id="strip">${ls.map((l) => { const s = subj(l.subjectId) || { name: '?', emoji: '📘', color: '#888' }; const st = m >= toMin(l.end) ? 'past' : m >= toMin(l.start) ? 'now' : ''; return `<button class="sl ${st}" data-go="timetable" style="--c:${s.color}"><span class="n">${noLabel(lessonNo(d, l))}${l.double ? ' <em>2h</em>' : ''}</span><span class="e">${s.emoji}</span><b>${esc(s.name)}</b><span class="h">${l.start}</span></button>`; }).join('')}</div>`;
 }
 function overallAvg() {
   const avgs = S.subjects.map((s) => subjAvg(s.id)).filter((x) => x != null);
@@ -375,6 +475,7 @@ function viewHome(v) {
   <div class="hello"><div class="date">${fmtLong(new Date())}</div><h1 class="serif">${greet}${S.name ? ',<br><span>' + esc(S.name) + '</span>' : ''}</h1></div>
   <div class="stagger">
     ${heroHTML()}
+    ${todayStripHTML()}
     <div class="stats">
       <div class="stat"><b data-cu="${todayN}">0</b><span>na dziś</span></div>
       <div class="stat"><b data-cu="${st}">0</b><span>${ic('flame', 'style="width:12px;height:12px;display:inline;vertical-align:-1px;color:var(--warn)"')} seria dni</span></div>
@@ -382,7 +483,7 @@ function viewHome(v) {
     </div>
     <div class="section-h"><h3>Szybko</h3></div>
     <div class="quick">
-      <button data-q="task"><div class="ic">${ic('bell')}</div>Przypomnij</button>
+      <button data-q="task"><div class="ic">${ic('bell')}</div>Zadanie</button>
       <button data-q="scan"><div class="ic">${ic('camera')}</div>Skanuj</button>
       <button data-q="focus"><div class="ic">${ic('timer')}</div>Fokus</button>
       <button data-q="cards"><div class="ic">${ic('cards')}</div>Fiszki</button>
@@ -396,6 +497,7 @@ function viewHome(v) {
   </div>`;
   bindCommon(v);
   $$('[data-cu]', v).forEach((el) => countUp(el, parseFloat(el.dataset.cu), +(el.dataset.dec || 0)));
+  const now = $('#strip .sl.now', v) || $('#strip .sl:not(.past)', v); if (now) $('#strip', v).scrollLeft = now.offsetLeft - 20;
   $$('[data-q]', v).forEach((b) => (b.onclick = () => ({ task: () => reminderSheet(), scan: () => newNoteSheet(), focus: pageFocus, cards: () => pageFlashcards() })[b.dataset.q]()));
 }
 
@@ -403,7 +505,7 @@ function viewHome(v) {
 function remHTML(r) {
   const d = new Date(r.due), t = TYPES.find((x) => x.id === r.type) || TYPES[4], s = subj(r.subjectId);
   const late = !r.done && d < new Date(), soon = !r.done && !late && d - new Date() < 864e5 * 1.5;
-  return `<div class="rem-wrap" data-rid="${r.id}"><div class="del-bg">${ic('trash')}</div>
+  return `<div class="rem-wrap" data-rid="${r.id}"><div class="del-bg">${ic('trash')}</div><div class="ok-bg">${ic('check')}</div>
   <div class="rem ${r.done ? 'done' : ''}"><span class="bar-c" style="background:${s?.color || 'var(--surface-3)'}"></span>
     <button class="check ${r.done ? 'on' : ''}" data-check>${ic('check')}</button>
     <div class="body" data-open><div class="t">${esc(r.title)}</div><div class="s"><span>${t.emoji} ${t.name}</span>${s ? `<span>· ${esc(s.name)}</span>` : ''}${r.note ? '<span>· 📎</span>' : ''}</div></div>
@@ -413,7 +515,7 @@ function remHTML(r) {
 function bindRems(root) {
   $$('.rem-wrap', root).forEach((w) => {
     const id = w.dataset.rid, r = S.reminders.find((x) => x.id === id); if (!r) return;
-    const card = $('.rem', w), bg = $('.del-bg', w);
+    const card = $('.rem', w), bg = $('.del-bg', w), okbg = $('.ok-bg', w);
     $('[data-check]', w).onclick = (e) => {
       e.stopPropagation();
       r.done = !r.done; r.doneAt = r.done ? Date.now() : null;
@@ -432,8 +534,9 @@ function bindRems(root) {
       const ddx = e.touches[0].clientX - x0, ddy = e.touches[0].clientY - y0;
       if (lock == null && (Math.abs(ddx) > 8 || Math.abs(ddy) > 8)) lock = Math.abs(ddx) > Math.abs(ddy) ? 'x' : 'y';
       if (lock !== 'x') return;
-      dx = Math.min(0, ddx); card.classList.add('swiping'); card.style.transform = `translateX(${dx}px)`;
-      bg.style.opacity = Math.min(1, -dx / 90);
+      dx = r.done ? Math.min(0, ddx) : ddx; card.classList.add('swiping'); card.style.transform = `translateX(${dx}px)`;
+      bg.style.opacity = dx < 0 ? Math.min(1, -dx / 90) : 0; okbg.style.opacity = dx > 0 ? Math.min(1, dx / 90) : 0;
+      if (Math.abs(dx) > 110 && !w.dataset.hz) { w.dataset.hz = 1; haptic(); } else if (Math.abs(dx) < 110) delete w.dataset.hz;
     }, { passive: true });
     card.addEventListener('touchend', () => {
       card.classList.remove('swiping');
@@ -441,7 +544,9 @@ function bindRems(root) {
         haptic('medium'); card.style.transform = 'translateX(-110%)';
         setTimeout(() => { w.classList.add('removing'); }, 120);
         setTimeout(() => deleteReminder(r, true), 450);
-      } else { card.style.transform = ''; bg.style.opacity = 0; }
+      } else if (dx > 110 && !r.done) {
+        card.style.transform = ''; okbg.style.opacity = 0; $('[data-check]', w).click();
+      } else { card.style.transform = ''; bg.style.opacity = 0; okbg.style.opacity = 0; }
       x0 = null;
     });
   });
@@ -467,7 +572,7 @@ function viewTasks(v) {
   ${!S.reminders.length ? `<div class="empty"><div class="blob">🔔</div><h4>Pusto tu</h4><p>Dodaj sprawdzian, kartkówkę albo zadanie — przypomnę Ci o nim na czas.</p><button class="btn small" style="margin:20px auto 0;width:auto" data-add>${ic('plus')} Dodaj przypominajkę</button></div>` : ''}
   ${out.map(([n, g]) => `<div class="group-h"><span>${n}</span><span>${g.length}</span></div><div class="stagger">${g.map(remHTML).join('')}</div>`).join('')}
   ${done.length ? `<div class="group-h"><span>Zrobione</span><span>${done.length}</span></div><div>${done.map(remHTML).join('')}</div>` : ''}
-  ${S.reminders.length ? `<p class="kbd-note" style="text-align:center;margin-top:24px">Przesuń w lewo, żeby usunąć</p>` : ''}`;
+  ${S.reminders.length ? `<p class="kbd-note" style="text-align:center;margin-top:24px">Przesuń w prawo = zrobione · w lewo = usuń</p>` : ''}`;
   $$('[data-f]', v).forEach((b) => (b.onclick = () => { taskFilter = b.dataset.f; haptic(); render(); }));
   $('[data-add]', v) && ($('[data-add]', v).onclick = () => reminderSheet());
   bindRems(v);
@@ -582,7 +687,7 @@ function newNoteSheet() {
 }
 
 async function processNote(n, images, showPage) {
-  n.status = 'pending'; save(); refreshAll();
+  n.status = 'pending'; save(); refreshAll(); islandRender();
   let pg = null, stepT;
   if (showPage) {
     pg = openPage('Analizuję notatkę', (c) => {
@@ -827,9 +932,36 @@ function pageQuiz(noteId) {
 }
 
 /* ---- focus timer (persists while app open; notification when backgrounded) ---- */
-const F = { mode: 'work', left: null, running: false, endAt: 0, int: null, session: 0 };
+const F = { mode: 'work', left: null, running: false, endAt: 0, int: null, session: 0, onTick: null };
+const fTotal = () => (F.mode === 'work' ? S.focusCfg.work : S.focusCfg.brk) * 60;
+function focusTick() {
+  if (F.running && Date.now() >= F.endAt) focusFinish();
+  F.onTick && F.onTick();
+}
+async function focusStart() {
+  if (F.left == null) F.left = fTotal();
+  F.running = true; F.endAt = Date.now() + F.left * 1000;
+  clearInterval(F.int); F.int = setInterval(focusTick, 250);
+  if (NATIVE && (await ensureNotif())) LocalNotifications.schedule({ notifications: [{ id: 7, title: F.mode === 'work' ? '⏰ Koniec skupienia' : '☕ Koniec przerwy', body: F.mode === 'work' ? 'Świetna robota! Zrób sobie przerwę.' : 'Wracamy do nauki 💪', schedule: { at: new Date(F.endAt), allowWhileIdle: true }, smallIcon: 'ic_stat_icon', iconColor: S.accent }] }).catch(() => {});
+  islandRender();
+}
+function focusStop() {
+  if (!F.running) return;
+  F.left = Math.max(0, Math.round((F.endAt - Date.now()) / 1000)); F.running = false; clearInterval(F.int);
+  NATIVE && LocalNotifications.cancel({ notifications: [{ id: 7 }] }).catch(() => {});
+  F.onTick && F.onTick(); islandRender();
+}
+function focusFinish() {
+  F.running = false; clearInterval(F.int);
+  if (F.mode === 'work') { S.focus[ymd()] = (S.focus[ymd()] || 0) + S.focusCfg.work; F.session++; markActive(); save(); confetti(); toast('Sesja zakończona! Czas na przerwę ☕'); }
+  else toast('Przerwa koniec — wracamy! 💪');
+  haptic('success');
+  F.mode = F.mode === 'work' ? 'brk' : 'work'; F.left = fTotal();
+  pages.find((p) => p.title === 'Fokus')?.refresh();
+}
 function pageFocus() {
-  if (F.left == null) F.left = S.focusCfg.work * 60;
+  if (pages.some((p) => p.title === 'Fokus')) return;
+  if (F.left == null) F.left = fTotal();
   const pg = openPage('Fokus', (c) => {
     const R = 130, L = 2 * Math.PI * R;
     const presets = [[25, 5], [50, 10], [15, 3], [90, 15]];
@@ -839,43 +971,28 @@ function pageFocus() {
         <div class="c"><div><div class="time" id="tm"></div><div class="mode" id="md"></div></div></div></div>
       <div class="focus-ctrl"><button class="iconbtn" data-r>${ic('reset')}</button><button class="play" data-play></button><button class="iconbtn" data-skip>${ic('skip')}</button></div>
       <div class="card" style="margin-top:26px;display:flex;justify-content:space-around;text-align:center">
-        <div><div class="serif" style="font-size:30px" id="todayM">${S.focus[ymd()] || 0}</div><div class="muted" style="font-size:12px;font-weight:600">min dziś</div></div>
+        <div><div class="serif" style="font-size:30px">${S.focus[ymd()] || 0}</div><div class="muted" style="font-size:12px;font-weight:600">min dziś</div></div>
         <div><div class="serif" style="font-size:30px">${F.session}</div><div class="muted" style="font-size:12px;font-weight:600">sesji teraz</div></div>
       </div>
-      <p class="kbd-note" style="text-align:center">Odłóż telefon — dam znać powiadomieniem, kiedy koniec.</p>`;
+      <p class="kbd-note" style="text-align:center">Odłóż telefon — dam znać powiadomieniem, kiedy koniec. Timer widać też w wyspie u góry ekranu.</p>`;
     const upd = () => {
       if (!$('#tm', c)) return;
-      const tot = (F.mode === 'work' ? S.focusCfg.work : S.focusCfg.brk) * 60;
-      const left = F.running ? Math.max(0, Math.round((F.endAt - Date.now()) / 1000)) : F.left;
+      const tot = fTotal(), left = F.running ? Math.max(0, Math.round((F.endAt - Date.now()) / 1000)) : F.left;
       $('#tm', c).textContent = `${pad(Math.floor(left / 60))}:${pad(left % 60)}`;
       $('#md', c).textContent = F.mode === 'work' ? 'skupienie' : 'przerwa';
       $('#val', c).style.strokeDashoffset = L * (1 - left / tot);
       $('#ring', c).classList.toggle('run', F.running);
-      $('[data-play]', c).innerHTML = F.running ? ic('pause') : ic('play');
-      if (F.running && left <= 0) finish();
+      const pb = $('[data-play]', c), want = F.running ? 'pause' : 'play';
+      if (pb.dataset.s !== want) { pb.dataset.s = want; pb.innerHTML = ic(want); }
     };
-    const finish = async () => {
-      F.running = false; clearInterval(F.int);
-      if (F.mode === 'work') { S.focus[ymd()] = (S.focus[ymd()] || 0) + S.focusCfg.work; F.session++; markActive(); save(); confetti(); toast('Sesja zakończona! Czas na przerwę ☕'); }
-      else toast('Przerwa koniec — wracamy! 💪');
-      haptic('success');
-      F.mode = F.mode === 'work' ? 'brk' : 'work'; F.left = (F.mode === 'work' ? S.focusCfg.work : S.focusCfg.brk) * 60;
-      pg.refresh();
-    };
-    const start = async () => {
-      F.running = true; F.endAt = Date.now() + F.left * 1000;
-      F.int = setInterval(upd, 250);
-      if (NATIVE && (await ensureNotif())) LocalNotifications.schedule({ notifications: [{ id: 7, title: F.mode === 'work' ? '⏰ Koniec skupienia' : '☕ Koniec przerwy', body: F.mode === 'work' ? 'Świetna robota! Zrób sobie przerwę.' : 'Wracamy do nauki 💪', schedule: { at: new Date(F.endAt), allowWhileIdle: true }, smallIcon: 'ic_stat_icon', iconColor: S.accent }] }).catch(() => {});
-    };
-    const stop = () => { F.left = Math.max(0, Math.round((F.endAt - Date.now()) / 1000)); F.running = false; clearInterval(F.int); NATIVE && LocalNotifications.cancel({ notifications: [{ id: 7 }] }).catch(() => {}); };
-    $('[data-play]', c).onclick = () => { haptic('medium'); F.running ? stop() : start(); upd(); };
-    $('[data-r]', c).onclick = () => { if (F.running) stop(); F.left = (F.mode === 'work' ? S.focusCfg.work : S.focusCfg.brk) * 60; haptic(); upd(); };
-    $('[data-skip]', c).onclick = () => { if (F.running) stop(); F.mode = F.mode === 'work' ? 'brk' : 'work'; F.left = (F.mode === 'work' ? S.focusCfg.work : S.focusCfg.brk) * 60; haptic(); upd(); };
-    $$('[data-p]', c).forEach((b) => (b.onclick = () => { if (F.running) stop(); const [w, br] = b.dataset.p.split(',').map(Number); S.focusCfg = { work: w, brk: br }; save(); F.mode = 'work'; F.left = w * 60; pg.refresh(); }));
-    clearInterval(F.int); if (F.running) F.int = setInterval(upd, 250);
+    F.onTick = upd;
+    $('[data-play]', c).onclick = () => { haptic('medium'); F.running ? focusStop() : focusStart(); upd(); };
+    $('[data-r]', c).onclick = () => { focusStop(); F.left = fTotal(); haptic(); upd(); };
+    $('[data-skip]', c).onclick = () => { focusStop(); F.mode = F.mode === 'work' ? 'brk' : 'work'; F.left = fTotal(); haptic(); upd(); };
+    $$('[data-p]', c).forEach((b) => (b.onclick = () => { focusStop(); const [w, br] = b.dataset.p.split(',').map(Number); S.focusCfg = { work: w, brk: br }; save(); F.mode = 'work'; F.left = w * 60; pg.refresh(); }));
     upd();
   });
-  pg.onClose = () => { clearInterval(F.int); if (F.running) F.int = setInterval(() => { if (Date.now() >= F.endAt && F.running) { F.running = false; clearInterval(F.int); if (F.mode === 'work') { S.focus[ymd()] = (S.focus[ymd()] || 0) + S.focusCfg.work; F.session++; markActive(); save(); } F.mode = F.mode === 'work' ? 'brk' : 'work'; F.left = (F.mode === 'work' ? S.focusCfg.work : S.focusCfg.brk) * 60; toast('⏰ Fokus: koniec etapu'); } }, 1000); };
+  pg.onClose = () => { F.onTick = null; };
 }
 
 /* ======================= GRADES ======================= */
@@ -967,10 +1084,12 @@ function calcSheet(subjectId) {
 let ttDay = Math.min(5, Math.max(1, new Date().getDay() || 1));
 function pageTimetable() {
   openPage('Plan lekcji', (c) => {
-    const ls = [...(S.timetable[ttDay] || [])].sort((a, b) => toMin(a.start) - toMin(b.start));
+    const ls = dayLessons(ttDay);
     const now = new Date(), m = now.getHours() * 60 + now.getMinutes();
+    const cnt = lessonCount(ttDay);
     c.innerHTML = `<div class="days">${[1, 2, 3, 4, 5].map((d) => `<button class="${d === ttDay ? 'on' : ''}" data-d="${d}">${DAYS[d]}</button>`).join('')}</div>
-      <div class="stagger" id="ls">${ls.map((l, i) => { const s = subj(l.subjectId) || { name: '?', emoji: '📘', color: '#888' }; const isNow = ttDay === now.getDay() && toMin(l.start) <= m && m < toMin(l.end); return `<div class="lesson ${isNow ? 'now' : ''}"><div class="tm">${l.start}<small>${l.end}</small></div><button class="box" data-l="${l.id}" style="--c:${s.color}"><span class="emo">${s.emoji}</span><div><b>${i + 1}. ${esc(s.name)}</b><span>${l.room ? 'sala ' + esc(l.room) : '&nbsp;'}</span></div></button></div>`; }).join('')}</div>
+      ${ls.length ? `<div class="muted" style="font-size:13px;font-weight:600;margin:-6px 4px 14px">${cnt} ${plural(cnt, 'lekcja', 'lekcje', 'lekcji')} · ${ls[0].start}–${ls.at(-1).end}</div>` : ''}
+      <div class="stagger" id="ls">${ls.map((l, i) => { const s = subj(l.subjectId) || { name: '?', emoji: '📘', color: '#888' }; const isNow = ttDay === now.getDay() && toMin(l.start) <= m && m < toMin(l.end); return `<div class="lesson ${isNow ? 'now' : ''}"><div class="tm">${l.start}<small>${l.end}</small></div><button class="box" data-l="${l.id}" style="--c:${s.color}"><span class="emo">${s.emoji}</span><div><b>${noLabel(lessonNo(ttDay, l))} ${esc(s.name)}</b><span>${l.double ? 'podwójna · ' : ''}${l.room ? 'sala ' + esc(l.room) : l.double ? '' : '&nbsp;'}</span></div>${l.double ? '<span class="tag" style="margin-left:auto">2 h</span>' : ''}</button></div>`; }).join('')}</div>
       ${!ls.length ? `<div class="empty"><div class="blob">🗓️</div><h4>Wolne?</h4><p>Dodaj lekcje na ${DAYS_FULL[ttDay]}. Godziny podpowiem automatycznie.</p></div>` : ''}
       <button class="btn" data-add style="margin-top:18px">${ic('plus')} Dodaj lekcję</button>
       ${ls.length ? `<button class="btn ghost" data-copy style="margin-top:10px">Skopiuj godziny na inne dni</button>` : ''}`;
@@ -978,8 +1097,9 @@ function pageTimetable() {
     $('[data-add]', c).onclick = () => lessonSheet(ttDay);
     $$('[data-l]', c).forEach((b) => (b.onclick = () => lessonSheet(ttDay, S.timetable[ttDay].find((l) => l.id === b.dataset.l))));
     $('[data-copy]', c) && ($('[data-copy]', c).onclick = () => {
-      const times = ls.map((l) => [l.start, l.end]);
-      [1, 2, 3, 4, 5].forEach((d) => { if (d === ttDay) return; [...S.timetable[d]].sort((a, b) => toMin(a.start) - toMin(b.start)).forEach((l, i) => { if (times[i]) [l.start, l.end] = times[i]; }); });
+      // one slot per lesson-hour; a double lesson fills two slots
+      const slots = []; ls.forEach((l) => { if (l.double) { slots.push([l.start, fromMin(toMin(l.start) + 45)], [fromMin(toMin(l.end) - 45), l.end]); } else slots.push([l.start, l.end]); });
+      [1, 2, 3, 4, 5].forEach((d) => { if (d === ttDay) return; let u = 0; dayLessons(d).forEach((l) => { const a = slots[u], b = slots[u + units(l) - 1]; if (a && b) { l.start = a[0]; l.end = b[1]; } u += units(l); }); });
       save(); toast('Godziny skopiowane na pozostałe dni ✓');
     });
   });
@@ -988,16 +1108,21 @@ function lessonSheet(day, existing) {
   const ls = [...S.timetable[day]].sort((a, b) => toMin(a.start) - toMin(b.start));
   const last = ls.at(-1);
   const st = last ? fromMin(toMin(last.end) + 10) : '08:00';
-  const l = existing ? { ...existing } : { id: uid(), subjectId: S.subjects[0]?.id, start: st, end: fromMin(toMin(st) + 45), room: '' };
+  const l = existing ? { ...existing } : { id: uid(), subjectId: subjOrder()[0]?.id, start: st, end: fromMin(toMin(st) + 45), room: '', double: false };
+  const len = () => (l.double ? 95 : 45);
   openSheet(`<h3>${existing ? 'Edytuj lekcję' : 'Nowa lekcja'} · ${DAYS[day]}</h3>
-    <div class="field"><label>Przedmiot</label><div class="opts" id="l-s">${subjOrder().map((s) => `<button class="opt ${l.subjectId === s.id ? 'on' : ''}" data-v="${s.id}">${s.emoji} ${esc(s.name)}</button>`).join('')}</div></div>
+    <div class="field"><label>Przedmiot</label><div class="chips" id="l-s" style="margin-bottom:0">${subjOrder().map((s) => `<button class="chip ${l.subjectId === s.id ? 'on' : ''}" data-v="${s.id}">${s.emoji} ${esc(s.name)}</button>`).join('')}</div></div>
     <div class="field"><label>Godziny</label><div class="row2"><input class="inp" type="time" id="l-a" value="${l.start}"><input class="inp" type="time" id="l-b" value="${l.end}"></div></div>
+    <div class="list" style="margin-bottom:16px"><button class="row" id="l-dbl"><div class="ic">2×</div><div class="main"><b>Podwójna lekcja</b><span>np. WF 2 godziny — liczy się jako 2 lekcje</span></div><span class="switch ${l.double ? 'on' : ''}"></span></button></div>
     <div class="field"><label>Sala</label><input class="inp" id="l-r" value="${esc(l.room)}" placeholder="Np. 104"></div>
     <button class="btn" id="l-save">${ic('check')} Zapisz</button>
     ${existing ? `<button class="btn danger" id="l-del" style="margin-top:10px">${ic('trash')} Usuń</button>` : ''}`,
   (sh, close) => {
     $$('#l-s [data-v]', sh).forEach((b) => (b.onclick = () => { $$('#l-s [data-v]', sh).forEach((x) => x.classList.remove('on')); b.classList.add('on'); l.subjectId = b.dataset.v; haptic(); }));
-    $('#l-a', sh).onchange = (e) => { $('#l-b', sh).value = fromMin(toMin(e.target.value) + 45); };
+    $('#l-a', sh).onchange = (e) => { $('#l-b', sh).value = fromMin(toMin(e.target.value) + len()); };
+    const setDbl = (v) => { l.double = v; $('#l-dbl .switch', sh).classList.toggle('on', v); };
+    $('#l-dbl', sh).onclick = () => { setDbl(!l.double); $('#l-b', sh).value = fromMin(toMin($('#l-a', sh).value) + len()); haptic(); };
+    $('#l-b', sh).onchange = (e) => { const d = toMin(e.target.value) - toMin($('#l-a', sh).value); if (d >= 80 && !l.double) setDbl(true); if (d < 60 && l.double) setDbl(false); };
     $('#l-save', sh).onclick = () => {
       l.start = $('#l-a', sh).value; l.end = $('#l-b', sh).value; l.room = $('#l-r', sh).value.trim();
       if (existing) Object.assign(existing, l); else S.timetable[day].push(l);
@@ -1044,7 +1169,7 @@ function subjectSheet(existing) {
 
 /* ======================= MORE / SETTINGS ======================= */
 function viewMore(v) {
-  const today = (S.timetable[new Date().getDay()] || []).length;
+  const today = lessonCount(new Date().getDay());
   v.innerHTML = `
   <div class="title-row"><div><h1 class="serif">Więcej</h1><div class="sub">Plan, oceny i ustawienia</div></div></div>
   <div class="list stagger">
@@ -1058,7 +1183,7 @@ function viewMore(v) {
     <button class="row" data-go="settings"><div class="ic">${ic('gear')}</div><div class="main"><b>Ustawienia</b><span>wygląd, AI, powiadomienia</span></div><div class="end">${ic('chev')}</div></button>
     <button class="row" data-theme><div class="ic">${ic(document.documentElement.classList.contains('dark') ? 'sun' : 'moon')}</div><div class="main"><b>Tryb ${document.documentElement.classList.contains('dark') ? 'jasny' : 'ciemny'}</b><span>przełącz szybko</span></div></button>
   </div>
-  <p class="kbd-note" style="text-align:center;margin-top:30px">Zeszyt · v1.1</p>`;
+  <p class="kbd-note" style="text-align:center;margin-top:30px">Zeszyt · v1.2</p>`;
   bindCommon(v);
   $('[data-theme]', v).onclick = () => { S.theme = document.documentElement.classList.contains('dark') ? 'light' : 'dark'; save(); applyTheme(); haptic(); render(); };
 }
@@ -1161,7 +1286,10 @@ async function boot() {
   if (['#7c6cf0', '#de5f95', '#4f9a76', '#ec7f52', '#3384c4', '#3a3a40'].includes(S.accent)) S.accent = '#2f6bff';
   applyTheme();
   buildShell();
+  islandInit();
   render(true);
+  // keep focused inputs visible above the keyboard
+  document.addEventListener('focusin', (e) => { if (e.target.matches('input, textarea')) setTimeout(() => e.target.scrollIntoView({ block: 'center', behavior: 'smooth' }), 350); });
   if (!S.onboarded) onboarding();
   if (NATIVE) {
     CapApp.addListener('backButton', () => {
