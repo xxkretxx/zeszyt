@@ -1,5 +1,5 @@
 import './styles.css';
-import { Capacitor, SystemBars, SystemBarsStyle } from '@capacitor/core';
+import { Capacitor, SystemBars, SystemBarsStyle, registerPlugin } from '@capacitor/core';
 import { LocalNotifications } from '@capacitor/local-notifications';
 import { Haptics, ImpactStyle, NotificationType } from '@capacitor/haptics';
 import { App as CapApp } from '@capacitor/app';
@@ -8,6 +8,8 @@ import { ic } from './icons.js';
 import { summarizeNotes, askAboutNote, testKey } from './ai.js';
 
 const NATIVE = Capacitor.isNativePlatform();
+const IOS = Capacitor.getPlatform() === 'ios';
+const LiveActivity = registerPlugin('LiveActivity');
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = (s = '') => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -134,7 +136,32 @@ function liveActivity() {
   if (r) { const t = TYPES.find((x) => x.id === r.type) || TYPES[4]; return { icon: `<span class="isl-emo">${t.emoji}</span>`, color: '#fff', text: r.title, val: relWhen(new Date(r.due)), title: `${t.emoji} ${r.title}`, sub: `${t.name} · ${relWhen(new Date(r.due), true)}`, acts: [['Zrobione ✓', () => { r.done = true; r.doneAt = Date.now(); cancelReminder(r); markActive(); save(); confetti(innerWidth / 2, 60, 50); haptic('success'); refreshAll(); }], ['Otwórz', () => reminderSheet(r)]] }; }
   return null;
 }
+/* ---- iOS Live Activity (lock screen / Dynamic Island) ---- */
+let laKey = null;
+function syncLiveActivity() {
+  if (!IOS || !S?.onboarded) return;
+  const now = new Date(), d = now.getDay(), at = (t) => { const x = new Date(now); x.setHours(...t.split(':').map(Number), 0, 0); return +x; };
+  let w = null;
+  if (F.running) {
+    w = { key: 'F' + F.endAt, kind: 'focus', title: F.mode === 'work' ? 'Fokus' : 'Przerwa', subtitle: F.mode === 'work' ? 'Skupienie — telefon odłożony 📵' : 'Odpocznij chwilę', emoji: F.mode === 'work' ? '⏱️' : '☕', start: F.endAt - fTotal() * 1000, end: F.endAt, next: '' };
+  } else {
+    const c = currentLessonInfo();
+    if (c.kind === 'now') {
+      const s = subj(c.l.subjectId) || { name: '?', emoji: '📘' }, nx = c.next && subj(c.next.subjectId);
+      w = { key: 'L' + ymd() + c.l.id, kind: 'lesson', title: s.name, subtitle: `${noLabel(lessonNo(d, c.l))} lekcja${c.l.room ? ' · sala ' + c.l.room : ''}`, emoji: s.emoji, start: at(c.l.start), end: at(c.l.end), next: nx ? `Potem: ${nx.emoji} ${nx.name} o ${c.next.start}` : 'Ostatnia lekcja dzisiaj 🎉' };
+    } else if (c.kind === 'next' && c.in <= 20) {
+      const s = subj(c.l.subjectId) || { name: '?', emoji: '📘' };
+      const prev = dayLessons(d).filter((l) => toMin(l.end) <= toMin(c.l.start)).at(-1);
+      w = { key: 'B' + ymd() + c.l.id, kind: 'break', title: `Za chwilę: ${s.name}`, subtitle: `${c.isBreak ? 'Przerwa' : 'Start'} · ${c.l.start}${c.l.room ? ' · sala ' + c.l.room : ''}`, emoji: s.emoji, start: prev ? at(prev.end) : Date.now() - 60000, end: at(c.l.start), next: '' };
+    }
+  }
+  const k = w ? w.key : '';
+  if (k === laKey) return;
+  laKey = k;
+  (w ? LiveActivity.start(w) : LiveActivity.end()).catch(() => {});
+}
 function islandRender() {
+  syncLiveActivity();
   const el = ISL.el; if (!el) return;
   let state = 'hidden', html = '', acts = [];
   if (ISL.toast) {
@@ -259,6 +286,11 @@ function openPage(title, render, action) {
     p.scrollTop = st;
   };
   obj.refresh();
+  // swipe from the left edge to go back (iOS-style)
+  let sx = null, sdx = 0;
+  p.addEventListener('touchstart', (e) => { const t = e.touches[0]; sx = t.clientX < 28 ? t.clientX : null; sdx = 0; }, { passive: true });
+  p.addEventListener('touchmove', (e) => { if (sx == null) return; sdx = Math.max(0, e.touches[0].clientX - sx); p.style.transition = 'none'; p.style.transform = `translateX(${sdx}px)`; }, { passive: true });
+  p.addEventListener('touchend', () => { if (sx == null) return; p.style.transition = ''; p.style.transform = ''; if (sdx > innerWidth * 0.3) closePage(); sx = null; });
   pages.push(obj);
   islandRender();
   requestAnimationFrame(() => requestAnimationFrame(() => p.classList.add('in')));
@@ -1205,7 +1237,7 @@ function pageSettings() {
       <div class="list">
         <button class="row" id="st-dg"><div class="ic">🌙</div><div class="main"><b>Wieczorny przegląd</b><span>o 19:00: co masz jutro</span></div><span class="switch ${S.digest ? 'on' : ''}"></span></button>
         <button class="row" id="st-np"><div class="ic">🔔</div><div class="main"><b>Zezwól na powiadomienia</b><span>potrzebne do przypominajek</span></div><div class="end">${ic('chev')}</div></button>
-        <button class="row" id="st-ex"><div class="ic">⏱️</div><div class="main"><b>Dokładne alarmy</b><span>przypomnienia co do minuty (Android 12+)</span></div><div class="end">${ic('chev')}</div></button>
+        <button class="row ${IOS ? 'hidden' : ''}" id="st-ex"><div class="ic">⏱️</div><div class="main"><b>Dokładne alarmy</b><span>przypomnienia co do minuty (Android 12+)</span></div><div class="end">${ic('chev')}</div></button>
         <button class="row" id="st-tn"><div class="ic">🧪</div><div class="main"><b>Testowe powiadomienie</b><span>za 5 sekund</span></div></button>
       </div>
       <div class="section-h"><h3>Rok szkolny</h3></div>
@@ -1298,7 +1330,7 @@ async function boot() {
       if (tab !== 'home') return go('home');
       CapApp.minimizeApp();
     });
-    CapApp.addListener('resume', () => { refreshAll(); scheduleDigest(); });
+    CapApp.addListener('resume', () => { laKey = null; refreshAll(); scheduleDigest(); islandRender(); });
     LocalNotifications.addListener('localNotificationActionPerformed', (a) => { const rid = a.notification?.extra?.rid; if (rid) { const r = S.reminders.find((x) => x.id === rid); r && reminderSheet(r); } });
     scheduleDigest();
   }

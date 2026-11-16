@@ -203,7 +203,7 @@ svg { display: block; }
 
 .searchbar { display: flex; align-items: center; gap: 10px; background: var(--surface); border-radius: 16px; padding: 0 14px; box-shadow: var(--shadow); margin-bottom: 14px; }
 .searchbar svg { width: 18px; height: 18px; color: var(--muted); }
-.searchbar input { flex: 1; border: 0; outline: 0; background: none; height: 46px; font-size: 15px; }
+.searchbar input { flex: 1; border: 0; outline: 0; background: none; height: 46px; font-size: 16px; }
 
 /* note detail */
 .nd-hero { border-radius: var(--r-lg); overflow: hidden; position: relative; aspect-ratio: 16/10; background: var(--surface-2) center/cover; box-shadow: var(--shadow); animation: zoomIn .6s var(--ease) both; }
@@ -242,7 +242,7 @@ svg { display: block; }
 @keyframes spin { to { transform: rotate(360deg) } }
 
 .ask { display: flex; gap: 8px; margin-top: 14px; }
-.ask input { flex: 1; border: 0; outline: 0; background: var(--surface-2); border-radius: 14px; padding: 0 14px; height: 46px; }
+.ask input { font-size: 16px; flex: 1; border: 0; outline: 0; background: var(--surface-2); border-radius: 14px; padding: 0 14px; height: 46px; }
 .answer { margin-top: 12px; font-size: 15px; line-height: 1.6; white-space: pre-wrap; animation: rise .4s var(--ease) both; }
 
 /* ---------- flashcards ---------- */
@@ -504,3 +504,6 @@ body.has-island .view { padding-top: calc(var(--sat) + 56px); }
 :root.dark .ai-badge, :root.dark .points li::before { color: color-mix(in srgb, var(--accent) 55%, #fff); background: color-mix(in srgb, var(--accent) 25%, transparent); }
 :root.dark .stat { background: var(--surface-2); }
 :root.dark .sl { background: var(--surface-2); }
+
+/* iOS: no grey callouts / text magnifier on long-press of UI */
+body { -webkit-touch-callout: none; }

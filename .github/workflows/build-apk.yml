@@ -1,4 +1,4 @@
-name: Build APK
+name: Build APK + iOS
 
 on:
   push:
@@ -84,3 +84,76 @@ jobs:
           name: Zeszyt 1.0.${{ github.run_number }}
           body: Pobierz **Zeszyt.apk** na telefonie i zainstaluj.
           files: Zeszyt.apk
+
+  ios:
+    needs: apk
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+
+      - name: Install & build web app
+        run: |
+          npm ci
+          npm run build
+          gem install xcodeproj --no-document
+
+      - name: Create iOS project + Live Activity widget
+        env:
+          APP_VERSION: 1.0.${{ github.run_number }}
+          APP_BUILD: ${{ github.run_number }}
+        run: |
+          npx cap add ios
+          npx @capacitor/assets generate --ios
+          cp native-ios/app/*.swift ios/App/App/
+          mkdir -p ios/App/ZeszytWidget && cp native-ios/widget/* ios/App/ZeszytWidget/
+          sed -i '' 's/CAPBridgeViewController()/ZeszytViewController()/' ios/App/App/SceneDelegate.swift
+          grep -n "ZeszytViewController" ios/App/App/SceneDelegate.swift
+          PL=ios/App/App/Info.plist
+          /usr/libexec/PlistBuddy -c "Add :NSSupportsLiveActivities bool true" $PL
+          /usr/libexec/PlistBuddy -c "Add :NSCameraUsageDescription string 'Zeszyt robi zdjęcia notatek, żeby AI mogło je opracować.'" $PL
+          /usr/libexec/PlistBuddy -c "Add :NSPhotoLibraryUsageDescription string 'Zeszyt dodaje zdjęcia notatek z galerii.'" $PL
+          /usr/libexec/PlistBuddy -c "Add :ITSAppUsesNonExemptEncryption bool false" $PL
+          ruby native-ios/add_widget.rb
+          npx cap sync ios
+
+      - name: Build unsigned .ipa
+        run: |
+          cd ios/App
+          xcodebuild -project App.xcodeproj -scheme App -configuration Release -sdk iphoneos \
+            -destination 'generic/platform=iOS' -derivedDataPath "$RUNNER_TEMP/dd" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build > "$RUNNER_TEMP/build.log" 2>&1 \
+            || { grep -E "error:|fatal|failed" "$RUNNER_TEMP/build.log" | head -80; tail -60 "$RUNNER_TEMP/build.log"; exit 1; }
+          APP=$(find "$RUNNER_TEMP/dd/Build/Products/Release-iphoneos" -maxdepth 1 -name "*.app" | head -1)
+          echo "Built: $APP"; ls "$APP/PlugIns" || true
+          mkdir -p Payload && cp -R "$APP" Payload/
+          zip -qry ../../Zeszyt.ipa Payload
+
+      - name: Publish .ipa to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.${{ github.run_number }}
+          name: Zeszyt 1.0.${{ github.run_number }}
+          files: Zeszyt.ipa
+
+      - name: Publish build log on failure
+        if: failure()
+        run: |
+          mkdir -p logs
+          { grep -nE "error:|fatal|Undefined|failed" "$RUNNER_TEMP/build.log" | head -150; echo ----; tail -120 "$RUNNER_TEMP/build.log"; } > logs/ios-build-errors.txt 2>/dev/null || echo "no build log (failed before xcodebuild)" > logs/ios-build-errors.txt
+      - name: Upload failure log
+        if: failure()
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ios-log-${{ github.run_number }}
+          name: iOS build log ${{ github.run_number }}
+          prerelease: true
+          files: logs/ios-build-errors.txt

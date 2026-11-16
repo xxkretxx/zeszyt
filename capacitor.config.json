@@ -2,9 +2,22 @@
   "appId": "pl.zeszyt.app",
   "appName": "Zeszyt",
   "webDir": "www",
-  "android": { "backgroundColor": "#f2f3f5" },
+  "android": {
+    "backgroundColor": "#f2f3f5"
+  },
   "plugins": {
-    "SystemBars": { "insetsHandling": "css", "initialViewportFitValueHint": "cover" },
-    "LocalNotifications": { "smallIcon": "ic_stat_icon", "iconColor": "#2f6bff" }
+    "SystemBars": {
+      "insetsHandling": "css",
+      "initialViewportFitValueHint": "cover"
+    },
+    "LocalNotifications": {
+      "smallIcon": "ic_stat_icon",
+      "iconColor": "#2f6bff"
+    }
+  },
+  "ios": {
+    "backgroundColor": "#f2f3f5",
+    "allowsLinkPreview": false,
+    "scrollEnabled": true
   }
 }
