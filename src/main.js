@@ -5,7 +5,7 @@ import { Haptics, ImpactStyle, NotificationType } from '@capacitor/haptics';
 import { App as CapApp } from '@capacitor/app';
 import { kvGet, kvSet, photoGet, photoSet, photoDel } from './db.js';
 import { ic } from './icons.js';
-import { summarizeNotes, askAboutNote, testKey } from './ai.js';
+import { summarizeNotes, chatNote, generateMore, testKey } from './ai.js';
 
 const NATIVE = Capacitor.isNativePlatform();
 const IOS = Capacitor.getPlatform() === 'ios';
@@ -52,7 +52,7 @@ const REMIND = [
 
 let S = null;
 const blank = () => ({
-  v: 1, name: '', theme: 'auto', accent: '#2f6bff', apiKey: '', model: 'claude-haiku-5-5', aiProvider: 'gemini', geminiKey: '', geminiModel: 'gemini-flash-latest',
+  v: 1, name: '', theme: 'auto', accent: '#2f6bff', apiKey: '', model: 'claude-haiku-5-5', aiProvider: 'gemini', aiInstructions: '', geminiKey: '', geminiModel: 'gemini-flash-latest',
   subjects: defaultSubjects(), reminders: [], notes: [], cards: {}, timetable: { 1: [], 2: [], 3: [], 4: [], 5: [] },
   grades: [], subjVer: 2, focus: {}, activity: {}, focusCfg: { work: 25, brk: 5 }, vacation: '2027-06-25', digest: true, onboarded: false,
 });
@@ -734,9 +734,9 @@ async function processNote(n, images, showPage) {
   try {
     if (!images) images = await Promise.all(n.photos.map(photoGet));
     const subjNames = S.subjects.map((s) => s.name);
-    const res = await summarizeNotes(aiCfg(), images.filter(Boolean), subjNames, n.hint);
+    const res = await summarizeNotes(aiCfg(), images.filter(Boolean), subjNames, n.hint, S.aiInstructions);
     n.ai = {
-      summary: res.summary || '', points: res.points || [], terms: res.terms || [], flashcards: (res.flashcards || []).filter((f) => f.q && f.a),
+      summary: res.summary || '', points: res.points || [], terms: res.terms || [], flashcards: (res.flashcards || []).filter((f) => f.q && f.a).map((f) => ({ id: uid(), q: f.q, a: f.a })),
       quiz: (res.quiz || []).filter((q) => q.options?.length >= 2 && q.correct != null), text: res.text || '', emoji: res.emoji || '📝',
     };
     n.title = res.title || n.title;
@@ -762,6 +762,77 @@ async function processNote(n, images, showPage) {
   }
 }
 
+/* ---- AI actions executed inside the app ---- */
+const cleanQuiz = (q) => {
+  const options = (q.options || []).map(String).filter(Boolean).slice(0, 4);
+  const correct = Math.max(0, Math.min(options.length - 1, Number(q.correct) || 0));
+  return q.q && options.length >= 2 ? { q: String(q.q), options, correct } : null;
+};
+function applyActions(n, actions) {
+  const done = [];
+  if (!n.ai) n.ai = { summary: '', points: [], terms: [], flashcards: [], quiz: [], text: '', emoji: '📝' };
+  for (const a of actions || []) {
+    try {
+      if (a.type === 'add_flashcards') { const c = (a.cards || []).filter((f) => f.q && f.a).map((f) => ({ id: uid(), q: String(f.q), a: String(f.a) })); n.ai.flashcards.push(...c); if (c.length) done.push(`🃏 +${c.length} ${plural(c.length, 'fiszka', 'fiszki', 'fiszek')}`); }
+      if (a.type === 'add_quiz') { const q = (a.questions || []).map(cleanQuiz).filter(Boolean); n.ai.quiz.push(...q); if (q.length) done.push(`🧠 +${q.length} ${plural(q.length, 'pytanie', 'pytania', 'pytań')} do quizu`); }
+      if (a.type === 'add_points') { const p = (a.points || []).map(String).filter(Boolean); n.ai.points.push(...p); if (p.length) done.push(`📌 +${p.length} ${plural(p.length, 'punkt', 'punkty', 'punktów')}`); }
+      if (a.type === 'add_terms') { const t = (a.terms || []).filter((x) => x.term && x.def); n.ai.terms.push(...t); if (t.length) done.push(`📖 +${t.length} ${plural(t.length, 'pojęcie', 'pojęcia', 'pojęć')}`); }
+      if (a.type === 'update_summary' && a.summary) { n.ai.summary = String(a.summary); done.push('✏️ Zaktualizowano streszczenie'); }
+      if (a.type === 'rename_note' && a.title) { n.title = String(a.title).slice(0, 80); done.push(`✏️ Nowy tytuł: ${n.title}`); }
+      if (a.type === 'add_reminder' && a.title && /^\d{4}-\d{2}-\d{2}$/.test(a.date || '')) {
+        const r = { id: uid(), title: String(a.title).slice(0, 80), type: TYPES.some((t) => t.id === a.kind) ? a.kind : 'other', subjectId: n.subjectId, due: `${a.date}T${/^\d{2}:\d{2}$/.test(a.time || '') ? a.time : '16:00'}`, remind: 'at', note: a.note || '', done: false, created: Date.now() };
+        S.reminders.push(r); scheduleReminder(r); scheduleDigest();
+        done.push(`🔔 Przypominajka: ${r.title} · ${relWhen(new Date(r.due), true)}`);
+      }
+    } catch (e) { console.warn(e); }
+  }
+  if (done.length) save();
+  return done;
+}
+function cardSheet(n, card, onDone) {
+  const f = card ? { ...card } : { id: uid(), q: '', a: '' };
+  openSheet(`<h3>${card ? 'Edytuj fiszkę' : 'Nowa fiszka'}</h3>
+    <div class="field"><label>Pytanie (przód)</label><textarea class="inp" id="f-q" rows="2" placeholder="Np. Gdzie zachodzi fotosynteza?">${esc(f.q)}</textarea></div>
+    <div class="field"><label>Odpowiedź (tył)</label><textarea class="inp" id="f-a" rows="2" placeholder="Np. W chloroplastach">${esc(f.a)}</textarea></div>
+    <button class="btn" id="f-s">${ic('check')} Zapisz</button>
+    ${card ? `<button class="btn danger" id="f-x" style="margin-top:10px">${ic('trash')} Usuń fiszkę</button>` : `<button class="btn ghost" id="f-next" style="margin-top:10px">Zapisz i dodaj następną</button>`}`,
+  (sh, close) => {
+    if (!card) setTimeout(() => $('#f-q', sh).focus(), 400);
+    const commit = () => {
+      f.q = $('#f-q', sh).value.trim(); f.a = $('#f-a', sh).value.trim();
+      if (!f.q || !f.a) { haptic('warn'); toast('Wpisz pytanie i odpowiedź'); return false; }
+      if (!n.ai) applyActions(n, []);
+      if (card) Object.assign(card, f); else n.ai.flashcards.push(f);
+      save(); haptic('success'); return true;
+    };
+    $('#f-s', sh).onclick = () => { if (commit()) { close(); onDone(); } };
+    $('#f-next', sh) && ($('#f-next', sh).onclick = () => { if (commit()) { toast('Dodano ✓'); close(); onDone(); setTimeout(() => cardSheet(n, null, onDone), 350); } });
+    $('#f-x', sh) && ($('#f-x', sh).onclick = () => { n.ai.flashcards = n.ai.flashcards.filter((x) => x !== card); delete S.cards[n.id + ':' + card.id]; save(); close(); onDone(); });
+  });
+}
+function quizSheet(n, q, onDone) {
+  const it = q ? { q: q.q, options: [...q.options, '', '', '', ''].slice(0, 4), correct: q.correct } : { q: '', options: ['', '', '', ''], correct: 0 };
+  openSheet(`<h3>${q ? 'Edytuj pytanie' : 'Nowe pytanie'}</h3>
+    <div class="field"><label>Pytanie</label><textarea class="inp" id="q-q" rows="2" placeholder="Np. Który barwnik pochłania światło?">${esc(it.q)}</textarea></div>
+    <div class="field"><label>Odpowiedzi · stuknij literę poprawnej</label>${it.options.map((o, k) => `<div class="qopt"><button class="ql ${it.correct === k ? 'on' : ''}" data-k="${k}">${'ABCD'[k]}</button><input class="inp" data-o="${k}" value="${esc(o)}" placeholder="Odpowiedź ${'ABCD'[k]}${k > 1 ? ' (opcjonalnie)' : ''}"></div>`).join('')}</div>
+    <button class="btn" id="q-s">${ic('check')} Zapisz</button>
+    ${q ? `<button class="btn danger" id="q-x" style="margin-top:10px">${ic('trash')} Usuń pytanie</button>` : ''}`,
+  (sh, close) => {
+    $$('[data-k]', sh).forEach((b) => (b.onclick = () => { it.correct = +b.dataset.k; $$('[data-k]', sh).forEach((x) => x.classList.toggle('on', x === b)); haptic(); }));
+    $('#q-s', sh).onclick = () => {
+      const opts = $$('[data-o]', sh).map((i) => i.value.trim());
+      const kept = opts.map((o, k) => [o, k]).filter(([o]) => o);
+      const corr = kept.findIndex(([, k]) => k === it.correct);
+      const item = cleanQuiz({ q: $('#q-q', sh).value.trim(), options: kept.map(([o]) => o), correct: corr });
+      if (!item || corr < 0) { haptic('warn'); toast(corr < 0 ? 'Poprawna odpowiedź nie może być pusta' : 'Wpisz pytanie i min. 2 odpowiedzi'); return; }
+      if (!n.ai) applyActions(n, []);
+      if (q) Object.assign(q, item); else n.ai.quiz.push(item);
+      save(); haptic('success'); close(); onDone();
+    };
+    $('#q-x', sh) && ($('#q-x', sh).onclick = () => { n.ai.quiz = n.ai.quiz.filter((x) => x !== q); save(); close(); onDone(); });
+  });
+}
+const linkify = (t) => esc(t).replace(/\n/g, '<br>');
 let noteTab = 'sum';
 function pageNote(id) {
   const n = S.notes.find((x) => x.id === id); if (!n) return;
@@ -770,7 +841,9 @@ function pageNote(id) {
     const s = subj(n.subjectId), a = n.ai;
     o.title = s ? `${s.emoji} ${s.name}` : 'Notatka';
     $('.page-bar h2', o.el).textContent = o.title;
-    const tabs = a ? [['sum', 'Streszczenie'], ['terms', `Pojęcia ${a.terms.length}`], ['cards', `Fiszki ${a.flashcards.length}`], ['quiz', 'Quiz'], ['ask', 'Zapytaj AI'], ['text', 'Tekst'], ['pics', 'Zdjęcia']] : [['pics', 'Zdjęcia'], ['own', 'Moje dopiski']];
+    const tabList = () => (n.ai ? [['sum', 'Streszczenie'], ['ask', 'Zapytaj AI ✨'], ['cards', `Fiszki ${n.ai.flashcards.length}`], ['quiz', `Quiz ${n.ai.quiz.length}`], ['terms', `Pojęcia ${n.ai.terms.length}`], ['text', 'Tekst'], ['pics', 'Zdjęcia']] : [['pics', 'Zdjęcia'], ['own', 'Moje dopiski']]);
+    const tabs = tabList();
+    const updTabs = () => { const t = Object.fromEntries(tabList()); $$('[data-t]', c).forEach((b) => (b.textContent = t[b.dataset.t] || b.textContent)); $('#nd-t', c) && ($('#nd-t', c).textContent = n.title); };
     if (!tabs.some((t) => t[0] === noteTab)) noteTab = tabs[0][0];
     c.innerHTML = `
       <div class="nd-hero" style="background-image:url(${n.thumb})" data-pics><span class="count">${n.photos.length} ${plural(n.photos.length, 'zdjęcie', 'zdjęcia', 'zdjęć')}</span></div>
@@ -788,12 +861,22 @@ function pageNote(id) {
     const drawPane = () => {
       if (noteTab === 'sum') pane.innerHTML = `<div class="card"><div class="summary">${esc(a.summary)}</div></div><div class="section-h"><h3>Najważniejsze</h3></div><div class="card" style="padding:4px 18px"><ol class="points">${a.points.map((p) => `<li>${esc(p)}</li>`).join('')}</ol></div>`;
       if (noteTab === 'terms') pane.innerHTML = a.terms.length ? `<div class="card" style="padding:4px 18px">${a.terms.map((t) => `<div class="term"><b>${esc(t.term)}</b><span>${esc(t.def)}</span></div>`).join('')}</div>` : '<p class="muted">Brak pojęć.</p>';
-      if (noteTab === 'cards') pane.innerHTML = `<button class="btn" data-learn>${ic('cards')} Ucz się fiszek</button><div class="card" style="padding:4px 18px;margin-top:12px">${a.flashcards.map((f) => `<div class="term"><b>${esc(f.q)}</b><span>${esc(f.a)}</span></div>`).join('')}</div>`;
-      if (noteTab === 'quiz') pane.innerHTML = `<div class="card" style="text-align:center;padding:30px 20px"><div style="font-size:44px">🧠</div><div class="serif" style="font-size:28px;margin:8px 0">${a.quiz.length} ${plural(a.quiz.length, 'pytanie', 'pytania', 'pytań')}</div><div class="muted" style="font-size:14px;margin-bottom:18px">Sprawdź, ile zapamiętałeś z tej notatki</div><button class="btn" data-quiz>${ic('play')} Start</button></div>`;
+      if (noteTab === 'cards') pane.innerHTML = `<div class="row2"><button class="btn" data-learn ${a.flashcards.length ? '' : 'disabled'}>${ic('cards')} Ucz się</button><button class="btn ghost" data-addc>${ic('plus')} Dodaj</button></div>
+        <button class="btn ghost" data-more="cards" style="margin-top:10px">${ic('sparkle')} Wygeneruj 5 więcej z AI</button>
+        <div class="list" style="margin-top:12px">${a.flashcards.map((f) => `<button class="row" data-ec="${f.id}"><div class="main"><b>${esc(f.q)}</b><span>${esc(f.a)}</span></div><div class="end">${ic('edit')}</div></button>`).join('') || '<div class="muted" style="padding:16px;text-align:center">Brak fiszek — dodaj własną albo wygeneruj z AI</div>'}</div>`;
+      if (noteTab === 'quiz') pane.innerHTML = `<div class="card" style="text-align:center;padding:26px 20px"><div style="font-size:40px">🧠</div><div class="serif" style="font-size:28px;margin:6px 0">${a.quiz.length} ${plural(a.quiz.length, 'pytanie', 'pytania', 'pytań')}</div><div class="muted" style="font-size:14px;margin-bottom:16px">Sprawdź, ile zapamiętałeś z tej notatki</div><button class="btn" data-quiz ${a.quiz.length ? '' : 'disabled'}>${ic('play')} Start</button></div>
+        <div class="row2" style="margin-top:12px"><button class="btn ghost" data-addq>${ic('plus')} Dodaj pytanie</button><button class="btn ghost" data-more="quiz">${ic('sparkle')} 5 z AI</button></div>
+        <div class="list" style="margin-top:12px">${a.quiz.map((q, i) => `<button class="row" data-eq="${i}"><div class="main"><b>${esc(q.q)}</b><span>✓ ${esc(q.options[q.correct] || '')}</span></div><div class="end">${ic('edit')}</div></button>`).join('')}</div>`;
       if (noteTab === 'text') pane.innerHTML = `<div class="card"><div style="white-space:pre-wrap;line-height:1.6;font-size:15px;user-select:text">${esc(a.text || 'Brak tekstu.')}</div></div><button class="btn ghost" data-copy style="margin-top:12px">Kopiuj tekst</button>`;
-      if (noteTab === 'ask') pane.innerHTML = `<div class="card"><div class="muted" style="font-size:14px">Nie rozumiesz czegoś? Zapytaj — odpowiem na podstawie tej notatki.</div>
-        <div class="opts" style="margin-top:12px">${['Wyjaśnij prościej', 'Daj przykład', 'Jak to zapamiętać?', 'Co może być na sprawdzianie?'].map((x) => `<button class="opt" data-sug="${x}">${x}</button>`).join('')}</div>
-        <div class="ask"><input id="askq" placeholder="Twoje pytanie…"><button class="iconbtn" data-ask style="background:var(--accent);color:#fff">${ic('send')}</button></div><div class="answer" id="ans"></div></div>`;
+      if (noteTab === 'ask') {
+        n.chat = n.chat || [];
+        const sugs = ['Wyjaśnij prościej', 'Daj przykład', 'Jak to zapamiętać?', 'Co może być na sprawdzianie?', 'Zrób 5 fiszek więcej', 'Dodaj 3 pytania do quizu', 'Przypomnij mi powtórkę jutro'];
+        pane.innerHTML = `<div class="chat" id="chat">${n.chat.length ? '' : `<div class="bub ai"><div class="bt">Cześć! Znam tę notatkę. Pytaj o co chcesz — mogę też <b>dodać fiszki</b>, <b>pytania do quizu</b>, <b>punkty</b> albo <b>ustawić przypominajkę</b>. ✨</div></div>`}${n.chat.map((m) => `<div class="bub ${m.role}"><div class="bt">${linkify(m.text)}</div>${(m.acts || []).map((x) => `<div class="act">✓ ${esc(x)}</div>`).join('')}</div>`).join('')}</div>
+          <div class="chips" style="margin:12px -20px 10px">${sugs.map((x) => `<button class="chip" data-sug="${x}">${x}</button>`).join('')}</div>
+          <div class="ask"><textarea id="askq" rows="1" placeholder="Napisz do AI…"></textarea><button class="send" data-ask>${ic('send')}</button></div>
+          ${n.chat.length ? `<button class="link" data-clear style="display:block;margin:14px auto 0;font-size:13px">Wyczyść rozmowę</button>` : ''}`;
+        requestAnimationFrame(() => { const last = $('#chat .bub:last-child', pane); last && last.scrollIntoView({ block: 'nearest' }); });
+      }
       if (noteTab === 'pics') { pane.innerHTML = `<div class="photos" id="pics"></div>`; loadPics(); }
       if (noteTab === 'own') pane.innerHTML = `<textarea class="inp" id="own" style="min-height:200px" placeholder="Dopisz coś do tej notatki…">${esc(n.userText || '')}</textarea>`;
       bindPane();
@@ -807,14 +890,48 @@ function pageNote(id) {
       $('[data-quiz]', pane) && ($('[data-quiz]', pane).onclick = () => pageQuiz(n.id));
       $('[data-copy]', pane) && ($('[data-copy]', pane).onclick = async () => { try { await navigator.clipboard.writeText(a.text); toast('Skopiowano'); } catch { toast('Nie udało się skopiować'); } });
       const own = $('#own', pane); if (own) own.oninput = () => { n.userText = own.value; save(); };
+      const redraw = () => { const y = o.el.scrollTop; drawPane(); o.el.scrollTop = y; updTabs(); };
+      // ---- flashcards / quiz editing ----
+      $('[data-addc]', pane) && ($('[data-addc]', pane).onclick = () => cardSheet(n, null, redraw));
+      $$('[data-ec]', pane).forEach((b) => (b.onclick = () => cardSheet(n, a.flashcards.find((f) => f.id === b.dataset.ec), redraw)));
+      $('[data-addq]', pane) && ($('[data-addq]', pane).onclick = () => quizSheet(n, null, redraw));
+      $$('[data-eq]', pane).forEach((b) => (b.onclick = () => quizSheet(n, a.quiz[+b.dataset.eq], redraw)));
+      $$('[data-more]', pane).forEach((b) => (b.onclick = async () => {
+        if (!hasAI()) return toast('Dodaj klucz AI w Ustawieniach');
+        const kind = b.dataset.more; b.disabled = true; b.innerHTML = '<span class="isl-spin" style="border-top-color:var(--accent)"></span> Generuję…';
+        try {
+          const items = await generateMore(aiCfg(), n, kind, 5, S.aiInstructions);
+          const got = applyActions(n, [kind === 'cards' ? { type: 'add_flashcards', cards: items } : { type: 'add_quiz', questions: items }]);
+          toast(got[0] || 'AI nic nie dodało'); haptic('success');
+        } catch (e) { toast(e.message); }
+        redraw();
+      }));
+      // ---- chat ----
+      const chat = $('#chat', pane), ta = $('#askq', pane);
+      const bubble = (role, html, extra = '') => { const d = document.createElement('div'); d.className = 'bub ' + role + ' ' + extra; d.innerHTML = `<div class="bt">${html}</div>`; chat.append(d); d.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); return d; };
       const doAsk = async (q) => {
-        if (!q) return; if (!hasAI()) return toast('Dodaj klucz AI w Ustawieniach');
-        const ans = $('#ans', pane); ans.innerHTML = '<span class="muted">Myślę…</span>';
-        try { ans.textContent = await askAboutNote(aiCfg(), n, q); } catch (e) { ans.textContent = e.message; }
+        if (!q || ta?.dataset.busy) return; if (!hasAI()) return toast('Dodaj klucz AI w Ustawieniach');
+        ta.value = ''; ta.style.height = ''; ta.dataset.busy = 1;
+        bubble('user', linkify(q));
+        const typing = bubble('ai', '<span class="dots"><i></i><i></i><i></i></span>', 'typing');
+        try {
+          const res = await chatNote(aiCfg(), { note: n, history: n.chat, message: q, today: `${ymd()} (${DAYS_FULL[new Date().getDay()]})`, subjectName: subj(n.subjectId)?.name || '', name: S.name, instr: S.aiInstructions });
+          const acts = applyActions(n, res.actions);
+          n.chat.push({ role: 'user', text: q }, { role: 'ai', text: res.reply || 'Gotowe.', acts });
+          n.chat = n.chat.slice(-40); save();
+          typing.classList.remove('typing'); typing.innerHTML = `<div class="bt">${linkify(res.reply || 'Gotowe.')}</div>${acts.map((x) => `<div class="act">✓ ${esc(x)}</div>`).join('')}`;
+          typing.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+          if (acts.length) { haptic('success'); updTabs(); }
+        } catch (e) { typing.classList.remove('typing'); typing.innerHTML = `<div class="bt" style="color:var(--danger)">${esc(e.message)}</div>`; }
+        delete ta.dataset.busy;
       };
-      $$('[data-sug]', pane).forEach((b) => (b.onclick = () => { $('#askq', pane).value = b.dataset.sug; doAsk(b.dataset.sug); }));
-      $('[data-ask]', pane) && ($('[data-ask]', pane).onclick = () => doAsk($('#askq', pane).value.trim()));
-      $('#askq', pane) && ($('#askq', pane).onkeydown = (e) => e.key === 'Enter' && doAsk(e.target.value.trim()));
+      $$('[data-sug]', pane).forEach((b) => (b.onclick = () => doAsk(b.dataset.sug)));
+      $('[data-ask]', pane) && ($('[data-ask]', pane).onclick = () => doAsk(ta.value.trim()));
+      if (ta) {
+        ta.oninput = () => { ta.style.height = 'auto'; ta.style.height = Math.min(ta.scrollHeight, 140) + 'px'; };
+        ta.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); doAsk(ta.value.trim()); } };
+      }
+      $('[data-clear]', pane) && ($('[data-clear]', pane).onclick = () => { n.chat = []; save(); redraw(); });
     };
     $$('[data-t]', c).forEach((b) => (b.onclick = () => { noteTab = b.dataset.t; $$('[data-t]', c).forEach((x) => x.classList.toggle('on', x === b)); pane.style.animation = 'none'; void pane.offsetWidth; pane.style.animation = ''; drawPane(); haptic(); b.scrollIntoView({ inline: 'center', behavior: 'smooth', block: 'nearest' }); }));
     $('[data-pics]', c).onclick = async () => { const d = await photoGet(n.photos[0]); d && viewer(d); };
@@ -856,7 +973,7 @@ function editNoteSheet(n) {
 /* ======================= STUDY ======================= */
 function allCards(noteId) {
   const out = [];
-  S.notes.forEach((n) => { if (noteId && n.id !== noteId) return; (n.ai?.flashcards || []).forEach((f, i) => out.push({ key: n.id + ':' + i, ...f, note: n })); });
+  S.notes.forEach((n) => { if (noteId && n.id !== noteId) return; (n.ai?.flashcards || []).forEach((f, i) => out.push({ key: n.id + ':' + (f.id ?? i), ...f, note: n })); });
   return out;
 }
 const dueCards = (noteId) => allCards(noteId).filter((c) => !S.cards[c.key] || S.cards[c.key].due <= ymd());
@@ -1215,7 +1332,7 @@ function viewMore(v) {
     <button class="row" data-go="settings"><div class="ic">${ic('gear')}</div><div class="main"><b>Ustawienia</b><span>wygląd, AI, powiadomienia</span></div><div class="end">${ic('chev')}</div></button>
     <button class="row" data-theme><div class="ic">${ic(document.documentElement.classList.contains('dark') ? 'sun' : 'moon')}</div><div class="main"><b>Tryb ${document.documentElement.classList.contains('dark') ? 'jasny' : 'ciemny'}</b><span>przełącz szybko</span></div></button>
   </div>
-  <p class="kbd-note" style="text-align:center;margin-top:30px">Zeszyt · v1.2</p>`;
+  <p class="kbd-note" style="text-align:center;margin-top:30px">Zeszyt · v1.3</p>`;
   bindCommon(v);
   $('[data-theme]', v).onclick = () => { S.theme = document.documentElement.classList.contains('dark') ? 'light' : 'dark'; save(); applyTheme(); haptic(); render(); };
 }
@@ -1257,6 +1374,7 @@ function pageSettings() {
       box.innerHTML = `<div class="seg" id="st-pv"><button class="${g ? 'on' : ''}" data-v="gemini">Gemini · za darmo</button><button class="${!g ? 'on' : ''}" data-v="claude">Claude · płatny</button><span class="pill"></span></div>
         <div class="field"><label>${g ? 'Klucz Gemini API' : 'Klucz API Anthropic'}</label><input class="inp" id="st-k" type="password" value="${esc(g ? S.geminiKey : S.apiKey)}" placeholder="${g ? 'AIza…' : 'sk-ant-…'}" autocomplete="off"></div>
         <div class="field" style="margin-bottom:12px"><label>Model</label><div class="opts" id="st-m">${models.map(([k, l]) => `<button class="opt ${(g ? S.geminiModel : S.model) === k ? 'on' : ''}" data-v="${k}">${l}</button>`).join('')}</div></div>
+        <div class="field" style="margin-bottom:12px"><label>Twoje instrukcje dla AI</label><textarea class="inp" id="st-ins" rows="3" placeholder="Np. Tłumacz jak 12-latkowi. Dawaj przykłady z piłki nożnej. Fiszki maksymalnie krótkie.">${esc(S.aiInstructions || '')}</textarea></div>
         <button class="btn small" id="st-test">Sprawdź klucz</button>
         <p class="kbd-note">${g
           ? `Darmowy klucz bez karty: wejdź na <a class="link" href="https://aistudio.google.com/apikey">aistudio.google.com/apikey</a>, zaloguj się kontem Google i kliknij „Create API key”. Darmowy plan ma dzienny limit zapytań — jak się skończy, apka sama przełączy się na model Lite, a limit odnawia się codziennie. Uwaga: w darmowym planie Google może używać wysłanych treści do ulepszania swoich modeli.`
@@ -1265,6 +1383,7 @@ function pageSettings() {
       requestAnimationFrame(() => { const b = $('.on', seg); pill.style.left = b.offsetLeft + 'px'; pill.style.width = b.offsetWidth + 'px'; });
       $$('[data-v]', seg).forEach((b) => (b.onclick = () => { S.aiProvider = b.dataset.v; save(); haptic(); drawAI(); }));
       $$('#st-m [data-v]', box).forEach((b) => (b.onclick = () => { $$('#st-m [data-v]', box).forEach((x) => x.classList.toggle('on', x === b)); g ? (S.geminiModel = b.dataset.v) : (S.model = b.dataset.v); save(); haptic(); }));
+      $('#st-ins', box).oninput = (e) => { S.aiInstructions = e.target.value.slice(0, 1000); save(); };
       $('#st-k', box).oninput = (e) => { g ? (S.geminiKey = e.target.value.trim()) : (S.apiKey = e.target.value.trim()); save(); };
       $('#st-test', box).onclick = async (e) => {
         const b = e.currentTarget; if (!hasAI()) return toast('Wklej najpierw klucz');
@@ -1314,6 +1433,7 @@ function onboarding() {
 async function boot() {
   try { S = await kvGet('state'); } catch {}
   S = { ...blank(), ...(S || {}) };
+  S.notes.forEach((n) => (n.ai?.flashcards || []).forEach((f, i) => { if (f.id == null) f.id = String(i); })); // keeps old progress keys
   if ((S.subjVer || 1) < 2) { SUBJECT_LIST.forEach(([name, emoji], i) => { if (!S.subjects.some((x) => x.name.toLowerCase() === name.toLowerCase())) S.subjects.push({ id: uid(), name, emoji, color: COLORS[i % COLORS.length] }); }); S.subjVer = 2; save(); }
   if (['#7c6cf0', '#de5f95', '#4f9a76', '#ec7f52', '#3384c4', '#3a3a40'].includes(S.accent)) S.accent = '#2f6bff';
   applyTheme();
@@ -1321,7 +1441,11 @@ async function boot() {
   islandInit();
   render(true);
   // keep focused inputs visible above the keyboard
-  document.addEventListener('focusin', (e) => { if (e.target.matches('input, textarea')) setTimeout(() => e.target.scrollIntoView({ block: 'center', behavior: 'smooth' }), 350); });
+  // keep a focused field visible above the keyboard — only if it is actually covered (no jumping while typing)
+  document.addEventListener('focusin', (e) => {
+    const el = e.target; if (!el.matches('input, textarea')) return;
+    setTimeout(() => { if (document.activeElement !== el) return; const vh = window.visualViewport?.height || innerHeight, r = el.getBoundingClientRect(); if (r.bottom > vh - 12 || r.top < 70) el.scrollIntoView({ block: 'center' }); }, 450);
+  });
   if (!S.onboarded) onboarding();
   if (NATIVE) {
     CapApp.addListener('backButton', () => {

@@ -85,17 +85,54 @@ Odpowiedz WYŁĄCZNIE poprawnym JSON-em (bez markdown, bez \`\`\`) o schemacie:
 }
 Fiszek 5-10, pytań quizu 4-6 (correct = indeks poprawnej odpowiedzi 0-3, mieszaj pozycje). Jeśli zdjęcie nie jest notatką, i tak zwróć JSON i opisz co widzisz.`;
 
-export async function summarizeNotes(cfg, images, subjects, hint) {
+const extra = (instr) => (instr ? `\n\nWłasne instrukcje ucznia (stosuj je zawsze, o ile nie każą łamać zasad JSON): ${instr}` : '');
+
+export async function summarizeNotes(cfg, images, subjects, hint, instr) {
   const parts = images.map((image) => ({ image }));
   parts.push({ text: `Przedmioty ucznia: ${subjects.join(', ')}. Wybierz najlepiej pasujący (lub inny, jeśli żaden nie pasuje).${hint ? ' Wskazówka ucznia: ' + hint : ''}` });
-  return parseJSON(await run(cfg, parts, SYS, true, 6000));
+  return parseJSON(await run(cfg, parts, SYS + extra(instr), true, 6000));
 }
 
-export async function askAboutNote(cfg, note, question) {
-  const ctx = JSON.stringify({ title: note.title, summary: note.ai?.summary, points: note.ai?.points, terms: note.ai?.terms, text: note.ai?.text || note.userText });
-  return run(cfg, [{ text: `Notatka ucznia:\n${ctx}\n\nPytanie: ${question}` }],
-    'Jesteś cierpliwym korepetytorem. Odpowiadaj po polsku, krótko (max 6 zdań), prostym językiem, bez formatowania markdown. Opieraj się na notatce, a jeśli trzeba, dopowiedz wiedzę szkolną.',
-    false, 1200);
+const CHAT_SYS = `Jesteś korepetytorem wbudowanym w szkolną aplikację „Zeszyt”. Rozmawiasz z uczniem o JEDNEJ jego notatce.
+Odpowiadasz po polsku, prosto i konkretnie (zwykle 2-6 zdań), bez markdown (bez **, #, list z myślnikami — możesz użyć numeracji 1. 2. 3.).
+Opieraj się na notatce; gdy trzeba, dopowiedz wiedzę szkolną, ale nie zmyślaj.
+
+Masz pełną integrację z aplikacją — możesz WYKONYWAĆ AKCJE, gdy uczeń o to prosi albo gdy to wyraźnie pomoże (np. „zrób więcej fiszek”, „dodaj pytania do quizu”, „przypomnij mi powtórkę w piątek”, „dopisz to do notatki”).
+Nie wykonuj akcji, o które nie proszono, poza drobną pomocą (np. po wyjaśnieniu trudnego pojęcia możesz dodać 1 fiszkę i to powiedzieć).
+Dostępne akcje:
+- {"type":"add_flashcards","cards":[{"q":"pytanie","a":"krótka odpowiedź"}]}
+- {"type":"add_quiz","questions":[{"q":"pytanie","options":["A","B","C","D"],"correct":0}]}  (4 odpowiedzi, correct = indeks 0-3, mieszaj pozycję poprawnej)
+- {"type":"add_points","points":["krótki punkt"]}
+- {"type":"add_terms","terms":[{"term":"pojęcie","def":"definicja"}]}
+- {"type":"update_summary","summary":"nowe streszczenie 2-4 zdania"}
+- {"type":"rename_note","title":"nowy tytuł"}
+- {"type":"add_reminder","title":"np. Powtórka: fotosynteza","kind":"test|quiz|hw|project|other","date":"YYYY-MM-DD","time":"HH:MM","note":"opcjonalnie"}
+Nie dubluj fiszek ani pytań, które już są w notatce. Daty liczysz od dzisiejszej daty podanej niżej.
+W "reply" powiedz krótko, co zrobiłeś (np. „Dodałem 5 nowych fiszek”).
+
+Odpowiedz WYŁĄCZNIE JSON-em: {"reply":"tekst dla ucznia","actions":[...]}  (actions może być pustą listą).`;
+
+export async function chatNote(cfg, { note, history, message, today, subjectName, name, instr }) {
+  const ctx = {
+    tytul: note.title, przedmiot: subjectName, streszczenie: note.ai?.summary, punkty: note.ai?.points, pojecia: note.ai?.terms,
+    fiszki: (note.ai?.flashcards || []).map((f) => f.q), pytania_quizu: (note.ai?.quiz || []).map((q) => q.q),
+    tekst: (note.ai?.text || '').slice(0, 6000), dopiski: note.userText || '',
+  };
+  const hist = history.slice(-10).map((m) => `${m.role === 'user' ? 'Uczeń' : 'Ty'}: ${m.text}`).join('\n');
+  const text = `Dziś: ${today}. Uczeń: ${name || 'uczeń'}.\nNOTATKA:\n${JSON.stringify(ctx)}\n\n${hist ? 'DOTYCHCZASOWA ROZMOWA:\n' + hist + '\n\n' : ''}NOWA WIADOMOŚĆ UCZNIA: ${message}`;
+  const raw = await run(cfg, [{ text }], CHAT_SYS + extra(instr), true, 3000);
+  try { const j = parseJSON(raw); return { reply: String(j.reply || ''), actions: Array.isArray(j.actions) ? j.actions : [] }; }
+  catch { return { reply: raw.trim(), actions: [] }; }
+}
+
+export async function generateMore(cfg, note, kind, count, instr) {
+  const have = kind === 'cards' ? (note.ai?.flashcards || []).map((f) => f.q) : (note.ai?.quiz || []).map((q) => q.q);
+  const schema = kind === 'cards' ? '{"items":[{"q":"pytanie","a":"krótka odpowiedź"}]}' : '{"items":[{"q":"pytanie","options":["A","B","C","D"],"correct":0}]}';
+  const text = `Notatka: ${JSON.stringify({ title: note.title, summary: note.ai?.summary, points: note.ai?.points, terms: note.ai?.terms, text: (note.ai?.text || note.userText || '').slice(0, 6000) })}
+Już istnieją (NIE powtarzaj): ${JSON.stringify(have)}
+Zrób ${count} NOWYCH ${kind === 'cards' ? 'fiszek' : 'pytań quizowych (4 odpowiedzi, correct = indeks 0-3, mieszaj pozycję poprawnej)'} po polsku. Odpowiedz tylko JSON-em: ${schema}`;
+  const j = parseJSON(await run(cfg, [{ text }], 'Tworzysz materiały do nauki dla ucznia polskiej szkoły. Odpowiadasz wyłącznie poprawnym JSON-em.' + extra(instr), true, 3000));
+  return Array.isArray(j.items) ? j.items : [];
 }
 
 export async function testKey(cfg) {
