@@ -3,6 +3,7 @@ import { Capacitor, SystemBars, SystemBarsStyle, registerPlugin } from '@capacit
 import { LocalNotifications } from '@capacitor/local-notifications';
 import { Haptics, ImpactStyle, NotificationType } from '@capacitor/haptics';
 import { App as CapApp } from '@capacitor/app';
+import { Keyboard } from '@capacitor/keyboard';
 import { kvGet, kvSet, photoGet, photoSet, photoDel } from './db.js';
 import { ic } from './icons.js';
 import { summarizeNotes, chatNote, generateMore, analyzeMistakes, testKey } from './ai.js';
@@ -777,6 +778,19 @@ function applyActions(n, actions) {
       if (a.type === 'add_quiz') { const q = (a.questions || []).map(cleanQuiz).filter(Boolean); n.ai.quiz.push(...q); if (q.length) done.push(`🧠 +${q.length} ${plural(q.length, 'pytanie', 'pytania', 'pytań')} do quizu`); }
       if (a.type === 'add_points') { const p = (a.points || []).map(String).filter(Boolean); n.ai.points.push(...p); if (p.length) done.push(`📌 +${p.length} ${plural(p.length, 'punkt', 'punkty', 'punktów')}`); }
       if (a.type === 'add_terms') { const t = (a.terms || []).filter((x) => x.term && x.def); n.ai.terms.push(...t); if (t.length) done.push(`📖 +${t.length} ${plural(t.length, 'pojęcie', 'pojęcia', 'pojęć')}`); }
+      const del = (arr, idxs) => { const set = new Set((idxs || []).map(Number)); const before = arr.length; const keep = arr.filter((_, i) => !set.has(i)); arr.length = 0; arr.push(...keep); return before - keep.length; };
+      if (a.type === 'delete_flashcards') { const gone = n.ai.flashcards.filter((_, i) => (a.indices || []).map(Number).includes(i)); gone.forEach((f) => delete S.cards[n.id + ':' + f.id]); const k = del(n.ai.flashcards, a.indices); if (k) done.push(`🗑 −${k} ${plural(k, 'fiszka', 'fiszki', 'fiszek')}`); }
+      if (a.type === 'delete_quiz') { const k = del(n.ai.quiz, a.indices); if (k) done.push(`🗑 −${k} ${plural(k, 'pytanie', 'pytania', 'pytań')} z quizu`); }
+      if (a.type === 'delete_points') { const k = del(n.ai.points, a.indices); if (k) done.push(`🗑 −${k} ${plural(k, 'punkt', 'punkty', 'punktów')}`); }
+      if (a.type === 'delete_terms') { const k = del(n.ai.terms, a.indices); if (k) done.push(`🗑 −${k} ${plural(k, 'pojęcie', 'pojęcia', 'pojęć')}`); }
+      if (a.type === 'edit_flashcard') { const f = n.ai.flashcards[Number(a.index)]; if (f) { if (a.q) f.q = String(a.q); if (a.a) f.a = String(a.a); done.push('✏️ Poprawiono fiszkę'); } }
+      if (a.type === 'edit_quiz') { const i = Number(a.index), q = n.ai.quiz[i]; if (q) { const c = cleanQuiz({ q: a.q || q.q, options: a.options || q.options, correct: a.correct ?? q.correct }); if (c) { n.ai.quiz[i] = c; done.push('✏️ Poprawiono pytanie'); } } }
+      if (a.type === 'delete_reminders' || a.type === 'complete_reminders') {
+        const ids = new Set(a.ids || []); const hit = S.reminders.filter((r) => ids.has(r.id));
+        hit.forEach((r) => { cancelReminder(r); if (a.type === 'complete_reminders') { r.done = true; r.doneAt = Date.now(); } });
+        if (a.type === 'delete_reminders') S.reminders = S.reminders.filter((r) => !ids.has(r.id));
+        if (hit.length) { done.push(a.type === 'delete_reminders' ? `🗑 Usunięto: ${hit.map((r) => r.title).join(', ')}` : `✓ Zrobione: ${hit.map((r) => r.title).join(', ')}`); scheduleDigest(); }
+      }
       if (a.type === 'update_summary' && a.summary) { n.ai.summary = String(a.summary); done.push('✏️ Zaktualizowano streszczenie'); }
       if (a.type === 'rename_note' && a.title) { n.title = String(a.title).slice(0, 80); done.push(`✏️ Nowy tytuł: ${n.title}`); }
       if (a.type === 'add_reminder' && a.title && /^\d{4}-\d{2}-\d{2}$/.test(a.date || '')) {
@@ -832,7 +846,7 @@ function quizSheet(n, q, onDone) {
     $('#q-x', sh) && ($('#q-x', sh).onclick = () => { n.ai.quiz = n.ai.quiz.filter((x) => x !== q); save(); close(); onDone(); });
   });
 }
-const linkify = (t) => esc(t).replace(/\n/g, '<br>');
+const linkify = (t) => esc(String(t).replace(/\*\*(.+?)\*\*/g, '$1').replace(/^#+\s*/gm, '').replace(/^\s*[-*]\s+/gm, '• ')).replace(/\n/g, '<br>');
 let noteTab = 'sum';
 function pageNote(id) {
   const n = S.notes.find((x) => x.id === id); if (!n) return;
@@ -886,10 +900,10 @@ function pageNote(id) {
       if (noteTab === 'text') pane.innerHTML = `<div class="card"><div style="white-space:pre-wrap;line-height:1.6;font-size:15px;user-select:text">${esc(a.text || 'Brak tekstu.')}</div></div><button class="btn ghost" data-copy style="margin-top:12px">Kopiuj tekst</button>`;
       if (noteTab === 'ask') {
         n.chat = n.chat || [];
-        const sugs = ['Wyjaśnij prościej', 'Daj przykład', 'Jak to zapamiętać?', 'Co może być na sprawdzianie?', 'Zrób 5 fiszek więcej', 'Dodaj 3 pytania do quizu', 'Przypomnij mi powtórkę jutro'];
-        pane.innerHTML = `<div class="chat" id="chat">${n.chat.length ? '' : `<div class="bub ai"><div class="bt">Cześć! Znam tę notatkę. Pytaj o co chcesz — mogę też <b>dodać fiszki</b>, <b>pytania do quizu</b>, <b>punkty</b> albo <b>ustawić przypominajkę</b>. ✨</div></div>`}${n.chat.map((m) => `<div class="bub ${m.role}"><div class="bt">${linkify(m.text)}</div>${(m.acts || []).map((x) => `<div class="act">✓ ${esc(x)}</div>`).join('')}</div>`).join('')}</div>
+        const sugs = ['Wyjaśnij prościej', 'Daj przykład', 'Jak to zapamiętać?', 'Co może być na sprawdzianie?', 'Zrób 5 fiszek więcej', 'Usuń powtarzające się fiszki', 'Dodaj 3 pytania do quizu', 'Przypomnij mi powtórkę jutro'];
+        pane.innerHTML = `<div class="chat" id="chat">${n.chat.length ? '' : `<div class="bub ai"><div class="bt">Cześć! Znam tę notatkę. Pytaj o co chcesz — mogę też <b>dodawać, poprawiać i usuwać</b> fiszki, pytania i punkty albo <b>ustawić przypominajkę</b>. Każdą zmianę możesz cofnąć. ✨</div></div>`}${n.chat.map((m) => `<div class="bub ${m.role}"><div class="bt">${linkify(m.text)}</div>${(m.acts || []).map((x) => `<div class="act">✓ ${esc(x)}</div>`).join('')}</div>`).join('')}</div>
           <div class="chips" style="margin:12px -20px 10px">${sugs.map((x) => `<button class="chip" data-sug="${x}">${x}</button>`).join('')}</div>
-          <div class="ask"><textarea id="askq" rows="1" placeholder="Napisz do AI…"></textarea><button class="send" data-ask>${ic('send')}</button></div>
+          <div class="composer"><textarea id="askq" rows="1" placeholder="Napisz do AI…" enterkeyhint="send"></textarea><button class="send" data-ask aria-label="Wyślij">${ic('send')}</button></div>
           ${n.chat.length ? `<button class="link" data-clear style="display:block;margin:14px auto 0;font-size:13px">Wyczyść rozmowę</button>` : ''}`;
         requestAnimationFrame(() => { const last = $('#chat .bub:last-child', pane); last && last.scrollIntoView({ block: 'nearest' }); });
       }
@@ -935,15 +949,26 @@ function pageNote(id) {
       const bubble = (role, html, extra = '') => { const d = document.createElement('div'); d.className = 'bub ' + role + ' ' + extra; d.innerHTML = `<div class="bt">${html}</div>`; chat.append(d); d.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); return d; };
       const doAsk = async (q) => {
         if (!q || ta?.dataset.busy) return; if (!hasAI()) return toast('Dodaj klucz AI w Ustawieniach');
-        ta.value = ''; ta.style.height = ''; ta.dataset.busy = 1;
+        ta.value = ''; ta.style.height = ''; ta.dataset.busy = 1; $('[data-ask]', pane).classList.remove('on');
         bubble('user', linkify(q));
         const typing = bubble('ai', '<span class="dots"><i></i><i></i><i></i></span>', 'typing');
         try {
-          const res = await chatNote(aiCfg(), { note: n, history: n.chat, message: q, today: `${ymd()} (${DAYS_FULL[new Date().getDay()]})`, subjectName: subj(n.subjectId)?.name || '', name: S.name, instr: S.aiInstructions });
+          const rems = S.reminders.filter((r) => !r.done).slice(0, 40).map((r) => `${r.id}: ${r.title} (${r.due.replace('T', ' ')})`);
+          const res = await chatNote(aiCfg(), { note: n, history: n.chat, message: q, today: `${ymd()} (${DAYS_FULL[new Date().getDay()]})`, subjectName: subj(n.subjectId)?.name || '', name: S.name, instr: S.aiInstructions, reminders: rems });
+          const snap = JSON.stringify({ ai: n.ai, title: n.title, reminders: S.reminders, cards: S.cards });
           const acts = applyActions(n, res.actions);
           n.chat.push({ role: 'user', text: q }, { role: 'ai', text: res.reply || 'Gotowe.', acts });
           n.chat = n.chat.slice(-40); save();
-          typing.classList.remove('typing'); typing.innerHTML = `<div class="bt">${linkify(res.reply || 'Gotowe.')}</div>${acts.map((x) => `<div class="act">✓ ${esc(x)}</div>`).join('')}`;
+          typing.classList.remove('typing'); typing.innerHTML = `<div class="bt">${linkify(res.reply || 'Gotowe.')}</div>${acts.map((x) => `<div class="act">✓ ${esc(x)}</div>`).join('')}${acts.length ? `<button class="undo">${ic('reset')} Cofnij zmiany</button>` : ''}`;
+          const ub = $('.undo', typing);
+          if (ub) ub.onclick = () => {
+            const o2 = JSON.parse(snap); n.ai = o2.ai; n.title = o2.title; S.cards = o2.cards;
+            const before = new Set(o2.reminders.map((r) => r.id));
+            S.reminders.filter((r) => !before.has(r.id)).forEach(cancelReminder);
+            S.reminders = o2.reminders; S.reminders.forEach(scheduleReminder);
+            const last = n.chat.at(-1); if (last) last.acts = ['↩️ Cofnięto'];
+            save(); haptic(); ub.remove(); $$('.act', typing).forEach((x) => (x.style.textDecoration = 'line-through')); updTabs(); toast('Cofnięto zmiany AI');
+          };
           typing.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
           if (acts.length) { haptic('success'); updTabs(); }
         } catch (e) { typing.classList.remove('typing'); typing.innerHTML = `<div class="bt" style="color:var(--danger)">${esc(e.message)}</div>`; }
@@ -952,7 +977,7 @@ function pageNote(id) {
       $$('[data-sug]', pane).forEach((b) => (b.onclick = () => doAsk(b.dataset.sug)));
       $('[data-ask]', pane) && ($('[data-ask]', pane).onclick = () => doAsk(ta.value.trim()));
       if (ta) {
-        ta.oninput = () => { ta.style.height = 'auto'; ta.style.height = Math.min(ta.scrollHeight, 140) + 'px'; };
+        ta.oninput = () => { ta.style.height = 'auto'; ta.style.height = Math.min(ta.scrollHeight, 140) + 'px'; $('[data-ask]', pane).classList.toggle('on', !!ta.value.trim()); };
         ta.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); doAsk(ta.value.trim()); } };
       }
       $('[data-clear]', pane) && ($('[data-clear]', pane).onclick = () => { n.chat = []; save(); redraw(); });
@@ -1581,7 +1606,7 @@ function viewMore(v) {
     <button class="row" data-go="settings"><div class="ic">${ic('gear')}</div><div class="main"><b>Ustawienia</b><span>wygląd, AI, powiadomienia</span></div><div class="end">${ic('chev')}</div></button>
     <button class="row" data-theme><div class="ic">${ic(document.documentElement.classList.contains('dark') ? 'sun' : 'moon')}</div><div class="main"><b>Tryb ${document.documentElement.classList.contains('dark') ? 'jasny' : 'ciemny'}</b><span>przełącz szybko</span></div></button>
   </div>
-  <p class="kbd-note" style="text-align:center;margin-top:30px">Zeszyt · v1.4</p>`;
+  <p class="kbd-note" style="text-align:center;margin-top:30px">Zeszyt · v1.5</p>`;
   bindCommon(v);
   $('[data-theme]', v).onclick = () => { S.theme = document.documentElement.classList.contains('dark') ? 'light' : 'dark'; save(); applyTheme(); haptic(); render(); };
 }
@@ -1692,10 +1717,24 @@ async function boot() {
   // keep focused inputs visible above the keyboard
   // keep a focused field visible above the keyboard — only if it is actually covered (no jumping while typing)
   document.addEventListener('focusin', (e) => {
-    const el = e.target; if (!el.matches('input, textarea')) return;
+    const el = e.target; if (NATIVE || !el.matches('input, textarea')) return;
     setTimeout(() => { if (document.activeElement !== el) return; const vh = window.visualViewport?.height || innerHeight, r = el.getBoundingClientRect(); if (r.bottom > vh - 12 || r.top < 70) el.scrollIntoView({ block: 'center' }); }, 450);
   });
   if (!S.onboarded) onboarding();
+  // keyboard: if the WebView isn't resized (Android edge-to-edge), lift content by the keyboard height ourselves
+  if (NATIVE) {
+    let baseH = innerHeight;
+    const root = document.documentElement;
+    Keyboard.addListener('keyboardWillShow', () => { baseH = Math.max(baseH, innerHeight); });
+    Keyboard.addListener('keyboardDidShow', ({ keyboardHeight }) => {
+      const resized = baseH - innerHeight > 80;
+      root.style.setProperty('--kb', resized ? '0px' : keyboardHeight + 'px');
+      document.body.classList.add('kb-open');
+      const el = document.activeElement;
+      if (el && el.matches('input, textarea')) setTimeout(() => el.scrollIntoView({ block: 'center', behavior: 'smooth' }), 60);
+    });
+    Keyboard.addListener('keyboardWillHide', () => { root.style.setProperty('--kb', '0px'); document.body.classList.remove('kb-open'); });
+  }
   if (NATIVE) {
     CapApp.addListener('backButton', () => {
       if (sheetStack.length) return sheetStack.at(-1)();

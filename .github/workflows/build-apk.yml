@@ -123,6 +123,11 @@ jobs:
           /usr/libexec/PlistBuddy -c "Add :NSCameraUsageDescription string 'Zeszyt robi zdjęcia notatek, żeby AI mogło je opracować.'" $PL
           /usr/libexec/PlistBuddy -c "Add :NSPhotoLibraryUsageDescription string 'Zeszyt dodaje zdjęcia notatek z galerii.'" $PL
           /usr/libexec/PlistBuddy -c "Add :ITSAppUsesNonExemptEncryption bool false" $PL
+          # Polish system UI inside the app (photo picker, camera, permission dialogs)
+          /usr/libexec/PlistBuddy -c "Set :CFBundleDevelopmentRegion pl" $PL
+          /usr/libexec/PlistBuddy -c "Add :CFBundleLocalizations array" -c "Add :CFBundleLocalizations:0 string pl" $PL
+          /usr/libexec/PlistBuddy -c "Add :CFBundleAllowMixedLocalizations bool true" $PL
+          /usr/libexec/PlistBuddy -c "Print" $PL | head -40
           ruby native-ios/add_widget.rb
           npx cap sync ios
 

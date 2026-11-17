@@ -621,3 +621,30 @@ label.btn { cursor: pointer; }
 .thumbs button { aspect-ratio: 1; border-radius: 14px; background: var(--surface-2) center/cover; animation: pop .35s var(--spring) both; position: relative; }
 .thumbs button.on { box-shadow: 0 0 0 3px var(--accent); }
 .thumbs .ld { position: absolute; inset: 35%; border-radius: 50%; border: 3px solid var(--surface-3); border-top-color: var(--accent); animation: spin .8s linear infinite; }
+
+/* ---------- keyboard ---------- */
+:root { --kb: 0px; }
+.page { padding-bottom: calc(var(--sab) + 40px + var(--kb)); }
+.view { padding-bottom: calc(var(--sab) + 120px + var(--kb)); }
+.sheet { bottom: var(--kb); max-height: calc(92vh - var(--kb)); transition: transform .5s var(--ease), bottom .25s var(--ease); }
+body.kb-open .nav, body.kb-open .fab { transform: translate(-50%, 160%); opacity: 0; pointer-events: none; }
+body.kb-open .fab { transform: scale(0); }
+
+/* ---------- chat composer (pill with button inside) ---------- */
+.composer { display: flex; align-items: flex-end; gap: 6px; background: var(--surface); box-shadow: var(--shadow); border-radius: 24px; padding: 5px 5px 5px 16px; margin-top: 2px; }
+:root.dark .composer { background: var(--surface-2); box-shadow: none; border: 1px solid var(--line); }
+.composer textarea { flex: 1; min-width: 0; border: 0; outline: 0; background: none; resize: none; font-size: 16px; line-height: 22px; height: 38px; max-height: 140px; padding: 8px 0; margin: 0; display: block; }
+.composer .send { width: 38px; height: 38px; border-radius: 50%; background: var(--surface-3); color: var(--muted); flex: none; display: grid; place-items: center; transition: background .25s, color .25s, transform .2s var(--spring); }
+.composer .send.on { background: var(--accent); color: var(--accent-ink); }
+.composer .send svg { width: 17px; height: 17px; margin-left: -1px; }
+.composer:focus-within { box-shadow: 0 0 0 2px var(--accent); }
+.undo { margin-top: 6px; font-size: 12.5px; font-weight: 700; color: var(--muted); display: inline-flex; gap: 5px; align-items: center; padding: 5px 9px; border-radius: 10px; background: var(--surface-2); }
+.undo svg { width: 13px; height: 13px; }
+.bub .act + .act { margin-top: 4px; }
+
+/* ---------- buttons: no glow bleeding onto neighbours ---------- */
+.btn { box-shadow: 0 4px 12px -8px color-mix(in srgb, var(--accent) 70%, transparent); }
+:root.dark .btn { box-shadow: none; }
+.btn.ghost { box-shadow: var(--shadow); }
+:root.dark .btn.ghost { background: var(--surface-2); box-shadow: none; }
+.btns { gap: 12px; }
