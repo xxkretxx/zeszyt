@@ -5,7 +5,7 @@ import { Haptics, ImpactStyle, NotificationType } from '@capacitor/haptics';
 import { App as CapApp } from '@capacitor/app';
 import { kvGet, kvSet, photoGet, photoSet, photoDel } from './db.js';
 import { ic } from './icons.js';
-import { summarizeNotes, chatNote, generateMore, testKey } from './ai.js';
+import { summarizeNotes, chatNote, generateMore, analyzeMistakes, testKey } from './ai.js';
 
 const NATIVE = Capacitor.isNativePlatform();
 const IOS = Capacitor.getPlatform() === 'ios';
@@ -54,7 +54,7 @@ let S = null;
 const blank = () => ({
   v: 1, name: '', theme: 'auto', accent: '#2f6bff', apiKey: '', model: 'claude-haiku-5-5', aiProvider: 'gemini', aiInstructions: '', geminiKey: '', geminiModel: 'gemini-flash-latest',
   subjects: defaultSubjects(), reminders: [], notes: [], cards: {}, timetable: { 1: [], 2: [], 3: [], 4: [], 5: [] },
-  grades: [], subjVer: 2, focus: {}, activity: {}, focusCfg: { work: 25, brk: 5 }, vacation: '2027-06-25', digest: true, onboarded: false,
+  grades: [], mistakes: {}, quizLog: [], subjVer: 2, focus: {}, activity: {}, focusCfg: { work: 25, brk: 5 }, vacation: '2027-06-25', digest: true, onboarded: false,
 });
 
 let saveT;
@@ -646,7 +646,7 @@ const thumbCache = {};
 function noteCardHTML(n) {
   const s = subj(n.subjectId);
   return `<button class="note-card ${n.status === 'pending' ? 'pending' : ''}" data-note="${n.id}">
-    <div class="img" style="background-image:url(${n.thumb || ''})"><div class="emo">${n.ai?.emoji || s?.emoji || '📝'}</div></div>
+    <div class="img" style="background-image:url(${thumbURL(n)})"><div class="emo">${n.ai?.emoji || s?.emoji || '📝'}</div></div>
     <div class="b"><div class="t">${esc(n.title || 'Notatka')}</div><div class="d">${s ? `<span style="color:${s.color}">●</span> ${esc(s.name)} · ` : ''}${new Date(n.created).toLocaleDateString('pl-PL', { day: 'numeric', month: 'short' })}</div></div>
   </button>`;
 }
@@ -841,15 +841,15 @@ function pageNote(id) {
     const s = subj(n.subjectId), a = n.ai;
     o.title = s ? `${s.emoji} ${s.name}` : 'Notatka';
     $('.page-bar h2', o.el).textContent = o.title;
-    const tabList = () => (n.ai ? [['sum', 'Streszczenie'], ['ask', 'Zapytaj AI ✨'], ['cards', `Fiszki ${n.ai.flashcards.length}`], ['quiz', `Quiz ${n.ai.quiz.length}`], ['terms', `Pojęcia ${n.ai.terms.length}`], ['text', 'Tekst'], ['pics', 'Zdjęcia']] : [['pics', 'Zdjęcia'], ['own', 'Moje dopiski']]);
+    const tabList = () => (n.kind === 'mistakes' ? [['mist', `Błędy ${n.ai.mistakes?.length || 0}`], ['ask', 'Zapytaj AI ✨'], ['cards', `Fiszki ${n.ai.flashcards.length}`], ['quiz', `Quiz ${n.ai.quiz.length}`], ['terms', `Pojęcia ${n.ai.terms.length}`]] : n.ai ? [['sum', 'Streszczenie'], ['ask', 'Zapytaj AI ✨'], ['cards', `Fiszki ${n.ai.flashcards.length}`], ['quiz', `Quiz ${n.ai.quiz.length}`], ['terms', `Pojęcia ${n.ai.terms.length}`], ['text', 'Tekst'], ['pics', 'Zdjęcia']] : [['pics', 'Zdjęcia'], ['own', 'Moje dopiski']]);
     const tabs = tabList();
     const updTabs = () => { const t = Object.fromEntries(tabList()); $$('[data-t]', c).forEach((b) => (b.textContent = t[b.dataset.t] || b.textContent)); $('#nd-t', c) && ($('#nd-t', c).textContent = n.title); };
     if (!tabs.some((t) => t[0] === noteTab)) noteTab = tabs[0][0];
     c.innerHTML = `
-      <div class="nd-hero" style="background-image:url(${n.thumb})" data-pics><span class="count">${n.photos.length} ${plural(n.photos.length, 'zdjęcie', 'zdjęcia', 'zdjęć')}</span></div>
+      <div class="nd-hero" style="background-image:url(${thumbURL(n)})" data-pics>${n.photos.length ? `<span class="count">${n.photos.length} ${plural(n.photos.length, 'zdjęcie', 'zdjęcia', 'zdjęć')}</span>` : ''}<button class="count cam" data-thumb>${ic('image', 'style="width:14px;height:14px"')} zmień</button></div>
       <div class="nd-title" id="nd-t">${esc(n.title)}</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-        ${a ? `<span class="ai-badge">${ic('sparkle')} opracowane przez AI</span>` : ''}
+        ${n.kind === 'mistakes' ? `<span class="ai-badge" style="color:var(--danger);background:color-mix(in srgb,var(--danger) 12%,transparent)">🎯 notatka z błędów</span>` : a ? `<span class="ai-badge">${ic('sparkle')} opracowane przez AI</span>` : ''}
         <span class="tag">${new Date(n.created).toLocaleDateString('pl-PL', { day: 'numeric', month: 'long' })}</span>
         <button class="tag" data-edit>${ic('edit', 'style="width:12px;height:12px"')} edytuj</button>
       </div>
@@ -859,12 +859,28 @@ function pageNote(id) {
       <div class="tabpane" id="pane"></div>`;
     const pane = $('#pane', c);
     const drawPane = () => {
+      if (noteTab === 'mist') {
+        const srcN = (n.sourceIds || []).map((id) => S.notes.find((x) => x.id === id)).filter(Boolean);
+        pane.innerHTML = `${a.summary ? `<div class="card"><div class="summary">${esc(a.summary)}</div></div>` : ''}
+          <div class="section-h"><h3>Plan powtórki</h3></div>
+          <div class="steps">
+            <button class="step" data-s="read"><span class="n">1</span><span class="m"><b>Przeczytaj wyjaśnienia</b><small>${a.mistakes.length} ${plural(a.mistakes.length, 'błąd', 'błędy', 'błędów')} poniżej</small></span>${ic('chev')}</button>
+            <button class="step" data-s="cards"><span class="n">2</span><span class="m"><b>Fiszki z błędów</b><small>${a.flashcards.length} fiszek do utrwalenia</small></span>${ic('chev')}</button>
+            <button class="step" data-s="quiz"><span class="n">3</span><span class="m"><b>Ćwicz błędy</b><small>${a.quiz.length} pytań — Twoje błędne + nowe podobne</small></span>${ic('chev')}</button>
+            <button class="step" data-s="all" ${srcN.length ? '' : 'disabled'}><span class="n">4</span><span class="m"><b>Quiz z całości</b><small>${srcN.length ? srcN.map((x) => esc(x.title)).join(', ') : 'brak notatki źródłowej'}</small></span>${ic('chev')}</button>
+          </div>
+          <div class="section-h" id="mist-list"><h3>Co poszło nie tak</h3></div>
+          ${a.mistakes.map((m, i) => `<div class="mist" style="animation-delay:${i * 0.05}s"><b class="mq">${esc(m.q)}</b>
+            <div class="mrow r"><span>✗</span>${esc(m.yours || '')}</div><div class="mrow g"><span>✓</span>${esc(m.correct || '')}</div>
+            ${m.why ? `<p>${esc(m.why)}</p>` : ''}${m.tip ? `<div class="tip">💡 ${esc(m.tip)}</div>` : ''}</div>`).join('')}`;
+      }
       if (noteTab === 'sum') pane.innerHTML = `<div class="card"><div class="summary">${esc(a.summary)}</div></div><div class="section-h"><h3>Najważniejsze</h3></div><div class="card" style="padding:4px 18px"><ol class="points">${a.points.map((p) => `<li>${esc(p)}</li>`).join('')}</ol></div>`;
       if (noteTab === 'terms') pane.innerHTML = a.terms.length ? `<div class="card" style="padding:4px 18px">${a.terms.map((t) => `<div class="term"><b>${esc(t.term)}</b><span>${esc(t.def)}</span></div>`).join('')}</div>` : '<p class="muted">Brak pojęć.</p>';
       if (noteTab === 'cards') pane.innerHTML = `<div class="row2"><button class="btn" data-learn ${a.flashcards.length ? '' : 'disabled'}>${ic('cards')} Ucz się</button><button class="btn ghost" data-addc>${ic('plus')} Dodaj</button></div>
         <button class="btn ghost" data-more="cards" style="margin-top:10px">${ic('sparkle')} Wygeneruj 5 więcej z AI</button>
         <div class="list" style="margin-top:12px">${a.flashcards.map((f) => `<button class="row" data-ec="${f.id}"><div class="main"><b>${esc(f.q)}</b><span>${esc(f.a)}</span></div><div class="end">${ic('edit')}</div></button>`).join('') || '<div class="muted" style="padding:16px;text-align:center">Brak fiszek — dodaj własną albo wygeneruj z AI</div>'}</div>`;
       if (noteTab === 'quiz') pane.innerHTML = `<div class="card" style="text-align:center;padding:26px 20px"><div style="font-size:40px">🧠</div><div class="serif" style="font-size:28px;margin:6px 0">${a.quiz.length} ${plural(a.quiz.length, 'pytanie', 'pytania', 'pytań')}</div><div class="muted" style="font-size:14px;margin-bottom:16px">Sprawdź, ile zapamiętałeś z tej notatki</div><button class="btn" data-quiz ${a.quiz.length ? '' : 'disabled'}>${ic('play')} Start</button></div>
+        ${(() => { const logs = (S.quizLog || []).filter((l) => l.noteIds.includes(n.id)).slice(-5); const mk = mistakeList(n.id).length; return (logs.length ? `<div class="card" style="margin-top:12px"><div class="muted" style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;margin-bottom:10px">Ostatnie wyniki</div><div class="scores">${logs.map((l) => `<span style="--c:${readyColor(l.score / l.total)}">${l.score}/${l.total}</span>`).join('')}</div></div>` : '') + (mk ? `<button class="btn ghost" data-mk style="margin-top:12px;color:var(--danger)">${ic('bolt')} Popraw ${mk} ${plural(mk, 'błąd', 'błędy', 'błędów')} z tej notatki</button>` : ''); })()}
         <div class="row2" style="margin-top:12px"><button class="btn ghost" data-addq>${ic('plus')} Dodaj pytanie</button><button class="btn ghost" data-more="quiz">${ic('sparkle')} 5 z AI</button></div>
         <div class="list" style="margin-top:12px">${a.quiz.map((q, i) => `<button class="row" data-eq="${i}"><div class="main"><b>${esc(q.q)}</b><span>✓ ${esc(q.options[q.correct] || '')}</span></div><div class="end">${ic('edit')}</div></button>`).join('')}</div>`;
       if (noteTab === 'text') pane.innerHTML = `<div class="card"><div style="white-space:pre-wrap;line-height:1.6;font-size:15px;user-select:text">${esc(a.text || 'Brak tekstu.')}</div></div><button class="btn ghost" data-copy style="margin-top:12px">Kopiuj tekst</button>`;
@@ -888,8 +904,16 @@ function pageNote(id) {
     const bindPane = () => {
       $('[data-learn]', pane) && ($('[data-learn]', pane).onclick = () => pageFlashcards(n.id));
       $('[data-quiz]', pane) && ($('[data-quiz]', pane).onclick = () => pageQuiz(n.id));
+      $('[data-mk]', pane) && ($('[data-mk]', pane).onclick = () => pageMistakesQuiz(n.id));
       $('[data-copy]', pane) && ($('[data-copy]', pane).onclick = async () => { try { await navigator.clipboard.writeText(a.text); toast('Skopiowano'); } catch { toast('Nie udało się skopiować'); } });
       const own = $('#own', pane); if (own) own.oninput = () => { n.userText = own.value; save(); };
+      $$('[data-s]', pane).forEach((b) => (b.onclick = () => {
+        const k = b.dataset.s;
+        if (k === 'read') return $('#mist-list', pane).scrollIntoView({ behavior: 'smooth', block: 'start' });
+        if (k === 'cards') return pageFlashcards(n.id);
+        if (k === 'quiz') return pageQuiz(n.id, { title: 'Ćwicz błędy', mode: 'mist' });
+        if (k === 'all') return pageQuiz({ noteIds: [...(n.sourceIds || []), n.id] }, { title: 'Quiz z całości' });
+      }));
       const redraw = () => { const y = o.el.scrollTop; drawPane(); o.el.scrollTop = y; updTabs(); };
       // ---- flashcards / quiz editing ----
       $('[data-addc]', pane) && ($('[data-addc]', pane).onclick = () => cardSheet(n, null, redraw));
@@ -934,7 +958,7 @@ function pageNote(id) {
       $('[data-clear]', pane) && ($('[data-clear]', pane).onclick = () => { n.chat = []; save(); redraw(); });
     };
     $$('[data-t]', c).forEach((b) => (b.onclick = () => { noteTab = b.dataset.t; $$('[data-t]', c).forEach((x) => x.classList.toggle('on', x === b)); pane.style.animation = 'none'; void pane.offsetWidth; pane.style.animation = ''; drawPane(); haptic(); b.scrollIntoView({ inline: 'center', behavior: 'smooth', block: 'nearest' }); }));
-    $('[data-pics]', c).onclick = async () => { const d = await photoGet(n.photos[0]); d && viewer(d); };
+    $('[data-pics]', c).onclick = async (e) => { if (e.target.closest('[data-thumb]')) return thumbSheet(n, () => o.refresh()); const d = n.photos[0] ? await photoGet(n.photos[0]) : n.thumb; d && viewer(d); };
     $('[data-retry]', c) && ($('[data-retry]', c).onclick = () => { if (!hasAI()) return toast('Najpierw dodaj klucz AI w Ustawieniach'); processNote(n, null, true); });
     $('[data-edit]', c).onclick = () => editNoteSheet(n);
     drawPane();
@@ -950,17 +974,63 @@ function viewer(src) {
   const close = () => { v.style.opacity = 0; setTimeout(() => v.remove(), 300); sheetStack = sheetStack.filter((x) => x !== close); };
   v.onclick = close; sheetStack.push(close);
 }
+/* ---- thumbnails: cached blob URLs (fast re-renders) + picker ---- */
+const thumbCacheMap = new Map();
+function thumbURL(n) {
+  const d = n.thumb; if (!d) return '';
+  const hit = thumbCacheMap.get(n.id);
+  if (hit && hit.src === d) return hit.url;
+  try {
+    const [head, b64] = d.split(','), bin = atob(b64), u8 = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+    const url = URL.createObjectURL(new Blob([u8], { type: head.slice(5, head.indexOf(';')) || 'image/jpeg' }));
+    if (hit) URL.revokeObjectURL(hit.url);
+    thumbCacheMap.set(n.id, { src: d, url });
+    return url;
+  } catch { return d; }
+}
+async function toThumb(src) {
+  const img = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = src; });
+  const k = Math.min(1, 520 / Math.max(img.width, img.height)), c = document.createElement('canvas');
+  c.width = Math.round(img.width * k); c.height = Math.round(img.height * k); c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+  return c.toDataURL('image/jpeg', 0.75);
+}
+function thumbSheet(n, onDone) {
+  openSheet(`<h3>Zdjęcie główne</h3>
+    <div class="thumbs" id="th-list">${n.photos.map((p, i) => `<button data-p="${p}" style="animation-delay:${i * 0.04}s"><span class="ld"></span></button>`).join('')}</div>
+    <div class="btns">
+      <label class="btn ghost">${ic('image')} Wybierz z galerii<input type="file" accept="image/*" hidden id="th-gal"></label>
+      <label class="btn ghost">${ic('camera')} Zrób zdjęcie<input type="file" accept="image/*" capture="environment" hidden id="th-cam"></label>
+      <button class="btn ghost" id="th-gen">${ic('sparkle')} Okładka z tytułem</button>
+    </div>
+    <p class="kbd-note">Zmienia tylko miniaturkę — zdjęcia notatek zostają bez zmian.</p>`,
+  (sh, close) => {
+    const set = (t) => { n.thumb = t; save(); haptic('success'); close(); onDone && onDone(); toast('Zmieniono miniaturkę ✓'); };
+    $$('[data-p]', sh).forEach(async (b) => {
+      const d = await photoGet(b.dataset.p); if (!d) return b.remove();
+      const t = await toThumb(d); b.innerHTML = ''; b.style.backgroundImage = `url(${t})`; if (t === n.thumb) b.classList.add('on');
+      b.onclick = () => set(t);
+    });
+    const fromFile = async (e) => { const f = e.target.files[0]; if (!f) return; try { set(await compress(f, 520, 0.75)); } catch { toast('Nie udało się wczytać zdjęcia'); } };
+    $('#th-gal', sh).onchange = fromFile; $('#th-cam', sh).onchange = fromFile;
+    $('#th-gen', sh).onclick = () => set(makeCover(n.ai?.emoji || subj(n.subjectId)?.emoji || '📝', n.title, subj(n.subjectId)?.color || S.accent));
+  });
+}
 function editNoteSheet(n) {
   let sid = n.subjectId;
   openSheet(`<h3>Edytuj notatkę</h3>
     <div class="field"><label>Tytuł</label><input class="inp" id="e-t" value="${esc(n.title)}"></div>
     <div class="field"><label>Przedmiot</label><div class="chips" id="e-s" style="margin-bottom:0">${subjOrder().map((s) => `<button class="chip ${sid === s.id ? 'on' : ''}" data-v="${s.id}">${s.emoji} ${esc(s.name)}</button>`).join('')}</div></div>
-    <button class="btn" id="e-save">${ic('check')} Zapisz</button>
-    ${n.ai && hasAI() ? `<button class="btn ghost" id="e-redo" style="margin-top:10px">${ic('sparkle')} Opracuj ponownie</button>` : ''}
-    <button class="btn danger" id="e-del" style="margin-top:10px">${ic('trash')} Usuń notatkę</button>`,
+    <div class="field"><label>Miniaturka</label><button class="thumb-pick" id="e-th"><span style="background-image:url(${thumbURL(n)})"></span><b>Zmień zdjęcie główne</b>${ic('chev')}</button></div>
+    <div class="btns">
+      <button class="btn" id="e-save">${ic('check')} Zapisz</button>
+      ${n.ai && hasAI() && n.kind !== 'mistakes' && n.photos.length ? `<button class="btn ghost" id="e-redo">${ic('sparkle')} Opracuj ponownie</button>` : ''}
+      <button class="btn danger" id="e-del">${ic('trash')} Usuń notatkę</button>
+    </div>`,
   (sh, close) => {
     $$('#e-s [data-v]', sh).forEach((b) => (b.onclick = () => { $$('#e-s [data-v]', sh).forEach((x) => x.classList.remove('on')); b.classList.add('on'); sid = b.dataset.v; }));
     $('#e-save', sh).onclick = () => { n.title = $('#e-t', sh).value.trim() || n.title; n.subjectId = sid; save(); close(); refreshAll(); };
+    $('#e-th', sh).onclick = () => { close(); setTimeout(() => thumbSheet(n, refreshAll), 300); };
     $('#e-redo', sh) && ($('#e-redo', sh).onclick = () => { close(); closePage(); processNote(n, null, true); });
     let armed = false;
     $('#e-del', sh).onclick = (e) => {
@@ -971,51 +1041,154 @@ function editNoteSheet(n) {
 }
 
 /* ======================= STUDY ======================= */
-function allCards(noteId) {
+// scope: undefined (everything) | noteId | { noteIds:[...] } | { subjectId }
+function notesIn(scope) {
+  if (!scope) return S.notes;
+  if (typeof scope === 'string') return S.notes.filter((n) => n.id === scope);
+  if (scope.noteIds) return S.notes.filter((n) => scope.noteIds.includes(n.id));
+  if (scope.subjectId) return S.notes.filter((n) => n.subjectId === scope.subjectId);
+  return S.notes;
+}
+function allCards(scope) {
   const out = [];
-  S.notes.forEach((n) => { if (noteId && n.id !== noteId) return; (n.ai?.flashcards || []).forEach((f, i) => out.push({ key: n.id + ':' + (f.id ?? i), ...f, note: n })); });
+  notesIn(scope).forEach((n) => (n.ai?.flashcards || []).forEach((f, i) => out.push({ key: n.id + ':' + (f.id ?? i), ...f, note: n })));
   return out;
 }
-const dueCards = (noteId) => allCards(noteId).filter((c) => !S.cards[c.key] || S.cards[c.key].due <= ymd());
+const dueCards = (scope) => allCards(scope).filter((c) => !S.cards[c.key] || S.cards[c.key].due <= ymd());
+const qKey = (noteId, q) => { let h = 0; for (const ch of q) h = (h * 31 + ch.charCodeAt(0)) | 0; return noteId + ':' + (h >>> 0).toString(36); };
+function allQuestions(scope) {
+  const out = [];
+  notesIn(scope).forEach((n) => (n.ai?.quiz || []).forEach((q) => out.push({ ...q, note: n, key: qKey(n.id, q.q) })));
+  return out;
+}
+const mistakeList = (scope) => Object.entries(S.mistakes || {}).map(([key, m]) => ({ ...m, key, note: S.notes.find((n) => n.id === m.noteId) }))
+  .filter((m) => m.note && (!scope || notesIn(scope).includes(m.note)));
+function shuffleQ(q) {
+  const idx = q.options.map((_, i) => i).sort(() => Math.random() - 0.5);
+  return { ...q, options: idx.map((i) => q.options[i]), correct: idx.indexOf(+q.correct) };
+}
 function weekFocus() {
   const out = []; const d = new Date(); d.setDate(d.getDate() - 6);
   for (let i = 0; i < 7; i++) { out.push({ d: new Date(d), m: S.focus[ymd(d)] || 0 }); d.setDate(d.getDate() + 1); }
   return out;
 }
+function mastery(scope) {
+  const cs = allCards(scope); if (!cs.length) return null;
+  return cs.reduce((a, c) => a + Math.min(1, (S.cards[c.key]?.box || 0) / 3), 0) / cs.length;
+}
+function lastQuizAvg(scope) {
+  const ids = new Set(notesIn(scope).map((n) => n.id));
+  const logs = (S.quizLog || []).filter((l) => l.noteIds.some((x) => ids.has(x))).slice(-3);
+  return logs.length ? logs.reduce((a, l) => a + l.score / l.total, 0) / logs.length : null;
+}
+function readiness(scope) {
+  const m = mastery(scope), q = lastQuizAvg(scope), mk = mistakeList(scope).length;
+  if (m == null && q == null) return null;
+  const parts = [[m, 0.5], [q, 0.35]].filter(([v]) => v != null);
+  const w = parts.reduce((a, [, k]) => a + k, 0);
+  const base = parts.reduce((a, [v, k]) => a + v * k, 0) / w;
+  return Math.max(0, Math.min(1, base * 0.85 + 0.15 * (1 - Math.min(1, mk / 8))));
+}
+const pct = (x) => Math.round((x || 0) * 100);
+function ringSVG(v, size = 44, stroke = 5, color = 'var(--accent)') {
+  const r = (size - stroke) / 2, L = 2 * Math.PI * r;
+  return `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" style="transform:rotate(-90deg)"><circle cx="${size / 2}" cy="${size / 2}" r="${r}" fill="none" stroke="var(--surface-3)" stroke-width="${stroke}"/><circle cx="${size / 2}" cy="${size / 2}" r="${r}" fill="none" stroke="${color}" stroke-width="${stroke}" stroke-linecap="round" stroke-dasharray="${L}" stroke-dashoffset="${L * (1 - (v || 0))}" style="transition:stroke-dashoffset 1s var(--ease)"/></svg>`;
+}
+const readyColor = (v) => (v == null ? 'var(--muted)' : v >= 0.75 ? 'var(--ok)' : v >= 0.45 ? 'var(--warn)' : 'var(--danger)');
+
 function viewStudy(v) {
-  const due = dueCards().length, total = allCards().length;
-  const quizN = S.notes.reduce((a, n) => a + (n.ai?.quiz?.length || 0), 0);
+  const due = dueCards().length, total = allCards().length, mk = mistakeList().length;
+  const qN = allQuestions().length;
+  const now = new Date();
+  const tests = S.reminders.filter((r) => !r.done && ['test', 'quiz'].includes(r.type) && new Date(r.due) > now && dayDiff(new Date(r.due)) <= 14).sort((a, b) => a.due.localeCompare(b.due));
+  const next = tests[0];
   const wk = weekFocus(), mx = Math.max(30, ...wk.map((x) => x.m)), sum = wk.reduce((a, b) => a + b.m, 0);
+  const subs = S.subjects.filter((s) => S.notes.some((n) => n.subjectId === s.id)).map((s) => ({ s, r: readiness({ subjectId: s.id }), m: mastery({ subjectId: s.id }), cards: allCards({ subjectId: s.id }).length }));
+  const todo = [];
+  if (due) todo.push(['cards', '🃏', `${due} ${plural(due, 'fiszka', 'fiszki', 'fiszek')} do powtórki`, 'zajmie ok. ' + Math.max(1, Math.round(due * 0.25)) + ' min']);
+  if (mk) todo.push(['mist', '🎯', `${mk} ${plural(mk, 'błąd', 'błędy', 'błędów')} do poprawy`, 'pytania, w których się myliłeś']);
+  if (next) { const s = subj(next.subjectId); todo.push(['prep:' + (next.subjectId || '') + ':' + next.id, s?.emoji || '📝', `${next.title}`, `${relWhen(new Date(next.due), true)} · przygotuj się`]); }
   v.innerHTML = `
-  <div class="title-row"><div><h1 class="serif">Nauka</h1><div class="sub">Powtórki, quizy i skupienie</div></div></div>
-  <div class="tiles stagger">
-    <button class="tile" data-s="focus" style="--c:#ec7f52"><div class="ic">${ic('timer')}</div><div><b>Fokus</b><span>${S.focusCfg.work} min skupienia</span></div></button>
-    <button class="tile" data-s="cards" style="--c:var(--accent)"><div class="ic">${ic('cards')}</div><div><b>Fiszki</b><span>${total ? `${due} do powtórki` : 'z Twoich notatek'}</span></div></button>
-    <button class="tile" data-s="quiz" style="--c:#3384c4"><div class="ic">${ic('quiz')}</div><div><b>Quiz mix</b><span>${quizN} ${plural(quizN, 'pytanie', 'pytania', 'pytań')}</span></div></button>
-    <button class="tile" data-s="grades" style="--c:#4f9a76"><div class="ic">${ic('chart')}</div><div><b>Oceny</b><span>średnia ${overallAvg()?.toFixed(2).replace('.', ',') || '–'}</span></div></button>
-    <button class="tile wide" data-s="calc" style="--c:#de5f95"><div class="ic">${ic('calc')}</div><div><b>Ile mi brakuje?</b><span>Policz, jaką ocenę musisz dostać</span></div></button>
-  </div>
-  <div class="section-h"><h3>Skupienie w tym tygodniu</h3><span class="muted" style="font-size:13px;font-weight:600">${Math.floor(sum / 60)} h ${sum % 60} min</span></div>
-  <div class="card"><div class="week">${wk.map((x, i) => `<div class="d ${i === 6 ? 'today' : ''}"><small>${x.m || ''}</small><i style="height:0%" data-h="${(x.m / mx) * 100}"></i><span>${DAYS[x.d.getDay()]}</span></div>`).join('')}</div></div>
-  <div class="section-h"><h3>Seria</h3></div>
-  <div class="card countdown"><div class="num">${streak()}</div><div class="txt"><b>${plural(streak(), 'dzień', 'dni', 'dni')} z rzędu 🔥</b>Ucz się, rób zadania albo fokus codziennie, żeby utrzymać serię.</div></div>`;
+  <div class="title-row"><div><h1 class="serif">Nauka</h1><div class="sub">${total} fiszek · ${qN} pytań · seria ${streak()} 🔥</div></div></div>
+  <div class="stagger">
+    <div class="plan">
+      <div class="plan-h"><span>Plan na dziś</span><b>${todo.length ? todo.length + ' ' + plural(todo.length, 'krok', 'kroki', 'kroków') : 'gotowe ✓'}</b></div>
+      ${todo.length ? todo.map(([k, e, t, sub]) => `<button class="plan-row" data-do="${k}"><span class="e">${e}</span><span class="m"><b>${esc(t)}</b><small>${esc(sub)}</small></span><span class="go">${ic('play')}</span></button>`).join('')
+        : `<div class="plan-empty">${total ? 'Wszystko na dziś powtórzone. Możesz zrobić quiz albo fokus 💪' : 'Dodaj notatkę ze zdjęcia — zrobię z niej fiszki i quiz 📸'}</div>`}
+    </div>
+    ${tests.length ? `<div class="section-h"><h3>Sprawdziany i kartkówki</h3><span class="muted" style="font-size:13px;font-weight:600">14 dni</span></div>
+    <div class="list">${tests.map((r) => { const s = subj(r.subjectId); const rd = s ? readiness({ subjectId: s.id }) : null; const dd = dayDiff(new Date(r.due)); return `<button class="row" data-do="prep:${r.subjectId || ''}:${r.id}"><div class="ring-s">${ringSVG(rd, 40, 4, readyColor(rd))}<span>${rd == null ? '–' : pct(rd)}</span></div><div class="main"><b>${esc(r.title)}</b><span>${s ? s.emoji + ' ' + esc(s.name) + ' · ' : ''}${TYPES.find((t) => t.id === r.type)?.name}</span></div><span class="when ${dd <= 1 ? 'late' : dd <= 3 ? 'soon' : ''}">${dd === 0 ? 'dziś' : dd === 1 ? 'jutro' : 'za ' + dd + ' dni'}</span></button>`; }).join('')}</div>` : ''}
+    <div class="section-h"><h3>Tryby nauki</h3></div>
+    <div class="tiles">
+      <button class="tile" data-do="cards" style="--c:var(--accent)"><div class="ic">${ic('cards')}</div><div><b>Fiszki</b><span>${total ? `${due} do powtórki` : 'z Twoich notatek'}</span></div></button>
+      <button class="tile" data-do="quiz" style="--c:#3384c4"><div class="ic">${ic('quiz')}</div><div><b>Quiz mix</b><span>${qN} ${plural(qN, 'pytanie', 'pytania', 'pytań')}</span></div></button>
+      <button class="tile" data-do="mist" style="--c:#ef4444"><div class="ic">${ic('bolt')}</div><div><b>Moje błędy</b><span>${mk ? mk + ' do poprawy' : 'brak — super!'}</span></div></button>
+      <button class="tile" data-do="focus" style="--c:#f97316"><div class="ic">${ic('timer')}</div><div><b>Fokus</b><span>${S.focusCfg.work} min skupienia</span></div></button>
+      <button class="tile" data-do="grades" style="--c:#16a34a"><div class="ic">${ic('chart')}</div><div><b>Oceny</b><span>średnia ${overallAvg()?.toFixed(2).replace('.', ',') || '–'}</span></div></button>
+      <button class="tile" data-do="calc" style="--c:#0891b2"><div class="ic">${ic('calc')}</div><div><b>Ile brakuje?</b><span>kalkulator ocen</span></div></button>
+    </div>
+    ${subs.length ? `<div class="section-h"><h3>Opanowanie przedmiotów</h3></div>
+    <div class="list">${subs.map(({ s, r, m, cards }) => `<button class="row" data-do="prep:${s.id}:"><div class="ic" style="background:${s.color}22">${s.emoji}</div><div class="main"><b>${esc(s.name)}</b><div class="mbar"><i style="width:${pct(m)}%;background:${s.color}"></i></div><span>${cards} fiszek · opanowane ${pct(m)}%</span></div><div class="end" style="color:${readyColor(r)}">${r == null ? '–' : pct(r) + '%'}</div></button>`).join('')}</div>` : ''}
+    <div class="section-h"><h3>Skupienie w tym tygodniu</h3><span class="muted" style="font-size:13px;font-weight:600">${Math.floor(sum / 60)} h ${sum % 60} min</span></div>
+    <div class="card"><div class="week">${wk.map((x, i) => `<div class="d ${i === 6 ? 'today' : ''}"><small>${x.m || ''}</small><i style="height:0%" data-h="${(x.m / mx) * 100}"></i><span>${DAYS[x.d.getDay()]}</span></div>`).join('')}</div></div>
+  </div>`;
   requestAnimationFrame(() => setTimeout(() => $$('[data-h]', v).forEach((i) => (i.style.height = i.dataset.h + '%')), 80));
-  $$('[data-s]', v).forEach((b) => (b.onclick = () => ({ focus: pageFocus, cards: () => pageFlashcards(), quiz: () => pageQuiz(), grades: pageGrades, calc: () => calcSheet() })[b.dataset.s]()));
+  $$('[data-do]', v).forEach((b) => (b.onclick = () => studyAction(b.dataset.do)));
+}
+function studyAction(k) {
+  if (k === 'cards') return pageFlashcards();
+  if (k === 'quiz') return pageQuiz();
+  if (k === 'mist') return pageMistakesQuiz();
+  if (k === 'focus') return pageFocus();
+  if (k === 'grades') return pageGrades();
+  if (k === 'calc') return calcSheet();
+  if (k.startsWith('prep:')) { const [, sid, rid] = k.split(':'); return pagePrep(sid || null, S.reminders.find((r) => r.id === rid)); }
 }
 
-function pageFlashcards(noteId) {
-  let deck = dueCards(noteId);
+/* ---- przygotowanie do sprawdzianu z przedmiotu ---- */
+function pagePrep(subjectId, rem) {
+  const s = subjectId && subj(subjectId);
+  if (!s) { toast('Przypisz przedmiot do tej przypominajki, żeby przygotować plan'); rem && reminderSheet(rem); return; }
+  const scope = { subjectId };
+  openPage(`${s.emoji} ${s.name}`, (c) => {
+    const rd = readiness(scope), m = mastery(scope), q = lastQuizAvg(scope);
+    const due = dueCards(scope).length, cards = allCards(scope).length, qs = allQuestions(scope).length, mk = mistakeList(scope).length;
+    const notes = notesIn(scope);
+    const R = 70, L = 2 * Math.PI * R;
+    c.innerHTML = `
+      ${rem ? `<div class="card" style="display:flex;gap:12px;align-items:center;margin-bottom:6px"><span style="font-size:26px">${TYPES.find((t) => t.id === rem.type)?.emoji}</span><div style="flex:1"><b>${esc(rem.title)}</b><div class="muted" style="font-size:13px">${relWhen(new Date(rem.due), true)}</div></div></div>` : ''}
+      <div class="result-ring" style="width:160px;height:160px;margin:18px auto 6px"><svg viewBox="0 0 160 160"><circle cx="80" cy="80" r="${R}" stroke="var(--surface-2)" stroke-width="12" fill="none"/><circle id="pr" cx="80" cy="80" r="${R}" stroke="${readyColor(rd)}" stroke-width="12" fill="none" stroke-linecap="round" stroke-dasharray="${L}" stroke-dashoffset="${L}" style="transition:stroke-dashoffset 1.2s var(--ease)"/></svg><div class="c"><div><b style="font-size:44px">${rd == null ? '–' : pct(rd) + '%'}</b><span class="muted" style="font-size:12px;font-weight:700;display:block">gotowości</span></div></div></div>
+      <div class="stats" style="margin-bottom:6px"><div class="stat"><b>${pct(m)}%</b><span>fiszki opanowane</span></div><div class="stat"><b>${q == null ? '–' : pct(q) + '%'}</b><span>ostatnie quizy</span></div><div class="stat"><b>${mk}</b><span>błędów</span></div></div>
+      <div class="section-h"><h3>Plan przygotowania</h3></div>
+      <div class="steps">
+        <button class="step" data-s="cards" ${cards ? '' : 'disabled'}><span class="n">1</span><span class="m"><b>Fiszki</b><small>${cards ? `${due} do powtórki z ${cards}` : 'brak fiszek z tego przedmiotu'}</small></span>${ic('chev')}</button>
+        <button class="step" data-s="quiz" ${qs ? '' : 'disabled'}><span class="n">2</span><span class="m"><b>Quiz z przedmiotu</b><small>${qs} ${plural(qs, 'pytanie', 'pytania', 'pytań')} · AI przeanalizuje błędy</small></span>${ic('chev')}</button>
+        <button class="step" data-s="mist" ${mk ? '' : 'disabled'}><span class="n">3</span><span class="m"><b>Popraw błędy</b><small>${mk ? mk + ' pytań, w których się myliłeś' : 'brak błędów 🎉'}</small></span>${ic('chev')}</button>
+        <button class="step" data-s="focus"><span class="n">4</span><span class="m"><b>Sesja fokus</b><small>${S.focusCfg.work} min bez telefonu</small></span>${ic('chev')}</button>
+      </div>
+      <div class="section-h"><h3>Notatki</h3><span class="muted" style="font-size:13px;font-weight:600">${notes.length}</span></div>
+      <div class="notes-grid">${notes.map(noteCardHTML).join('') || '<p class="muted">Brak notatek z tego przedmiotu.</p>'}</div>`;
+    requestAnimationFrame(() => setTimeout(() => { const pr = $('#pr', c); if (pr) pr.style.strokeDashoffset = L * (1 - (rd || 0)); }, 80));
+    $$('[data-s]', c).forEach((b) => (b.onclick = () => ({ cards: () => pageFlashcards(scope), quiz: () => pageQuiz(scope), mist: () => pageMistakesQuiz(scope), focus: pageFocus })[b.dataset.s]()));
+    bindCommon(c);
+  });
+}
+
+function pageFlashcards(scope) {
+  let deck = dueCards(scope);
   let all = false;
-  if (!deck.length) { deck = allCards(noteId); all = true; }
+  if (!deck.length) { deck = allCards(scope); all = true; }
   if (!deck.length) { toast('Brak fiszek — dodaj notatkę i opracuj ją z AI 📸'); return; }
   deck = deck.sort(() => Math.random() - 0.5).slice(0, 25);
   let i = 0, known = 0;
-  openPage(noteId ? 'Fiszki' : 'Wszystkie fiszki', (c) => {
-    const draw = (first) => {
+  openPage(typeof scope === 'string' ? 'Fiszki' : 'Fiszki', (c) => {
+    const draw = () => {
       if (i >= deck.length) {
         markActive(); confetti(innerWidth / 2, innerHeight / 3); haptic('success');
-        c.innerHTML = `<div class="empty"><div class="blob">🎉</div><h4>Koniec sesji!</h4><p>Umiesz ${known} z ${deck.length}. ${known === deck.length ? 'Perfekcyjnie!' : 'Te, których nie umiesz, wrócą szybciej.'}</p><button class="btn small" style="margin:20px auto 0;width:auto" data-again>${ic('reset')} Jeszcze raz</button></div>`;
-        $('[data-again]', c).onclick = () => { i = 0; known = 0; deck.sort(() => Math.random() - 0.5); draw(true); };
+        c.innerHTML = `<div class="empty"><div class="blob">🎉</div><h4>Koniec sesji!</h4><p>Umiesz ${known} z ${deck.length}. ${known === deck.length ? 'Perfekcyjnie!' : 'Te, których nie umiesz, wrócą szybciej.'}</p>
+          <div class="btns" style="max-width:300px;margin:20px auto 0"><button class="btn" data-q>${ic('quiz')} Teraz quiz</button><button class="btn ghost" data-again>${ic('reset')} Jeszcze raz</button></div></div>`;
+        $('[data-again]', c).onclick = () => { i = 0; known = 0; deck.sort(() => Math.random() - 0.5); draw(); };
+        $('[data-q]', c).onclick = () => { closePage(); setTimeout(() => pageQuiz(scope), 300); };
         return;
       }
       const f = deck[i], s = subj(f.note.subjectId);
@@ -1037,47 +1210,123 @@ function pageFlashcards(noteId) {
         if (ok) known++;
         haptic(ok ? 'success' : 'light');
         fc.classList.remove('appear'); fc.classList.add(ok ? 'fly-r' : 'fly-l');
-        setTimeout(() => { i++; draw(false); }, 380);
-      }));
-    };
-    draw(true);
-  });
-}
-
-function pageQuiz(noteId) {
-  let qs = [];
-  S.notes.forEach((n) => { if (noteId && n.id !== noteId) return; (n.ai?.quiz || []).forEach((q) => qs.push({ ...q, note: n })); });
-  if (!qs.length) { toast('Brak pytań — dodaj i opracuj notatkę 📸'); return; }
-  qs = qs.sort(() => Math.random() - 0.5).slice(0, 10);
-  let i = 0, score = 0;
-  openPage('Quiz', (c) => {
-    const draw = () => {
-      if (i >= qs.length) {
-        const p = score / qs.length; markActive();
-        if (p >= 0.7) confetti(innerWidth / 2, innerHeight / 3);
-        const R = 80, L = 2 * Math.PI * R;
-        c.innerHTML = `<div class="result-ring"><svg viewBox="0 0 180 180"><circle cx="90" cy="90" r="${R}" stroke="var(--surface-2)" stroke-width="12" fill="none"/><circle id="rr" cx="90" cy="90" r="${R}" stroke="var(--accent)" stroke-width="12" fill="none" stroke-linecap="round" stroke-dasharray="${L}" stroke-dashoffset="${L}" style="transition:stroke-dashoffset 1.4s var(--ease)"/></svg><div class="c"><div><b id="sc">0</b><span class="muted" style="font-size:13px;font-weight:600">z ${qs.length}</span></div></div></div>
-          <div style="text-align:center"><div class="serif" style="font-size:30px">${p === 1 ? 'Perfekcyjnie! 🏆' : p >= 0.7 ? 'Świetnie! 🎉' : p >= 0.4 ? 'Nieźle 👍' : 'Do powtórki 📚'}</div><p class="muted">${p >= 0.7 ? 'Jesteś gotowy na sprawdzian.' : 'Przejrzyj fiszki i spróbuj jeszcze raz.'}</p></div>
-          <button class="btn" data-again style="margin-top:20px">${ic('reset')} Jeszcze raz</button>`;
-        requestAnimationFrame(() => setTimeout(() => { $('#rr', c).style.strokeDashoffset = L * (1 - p); countUp($('#sc', c), score); }, 100));
-        $('[data-again]', c).onclick = () => { i = 0; score = 0; qs.sort(() => Math.random() - 0.5); draw(); };
-        return;
-      }
-      const q = qs[i];
-      c.innerHTML = `<div style="display:flex;justify-content:space-between;font-size:13px;font-weight:650;color:var(--muted);margin-bottom:8px"><span>Pytanie ${i + 1} / ${qs.length}</span><span>${score} pkt</span></div>
-        <div class="progress"><i style="width:${(i / qs.length) * 100}%"></i></div>
-        <div class="qz-q">${esc(q.q)}</div>
-        ${q.options.map((o, k) => `<button class="qz-opt" data-k="${k}" style="animation-delay:${0.05 + k * 0.06}s"><span class="l">${'ABCD'[k]}</span>${esc(o)}</button>`).join('')}`;
-      let done = false;
-      $$('[data-k]', c).forEach((b) => (b.onclick = () => {
-        if (done) return; done = true;
-        const k = +b.dataset.k, ok = k === +q.correct;
-        if (ok) { score++; b.classList.add('right'); haptic('success'); } else { b.classList.add('wrong'); $(`[data-k="${+q.correct}"]`, c).classList.add('right'); haptic('warn'); }
-        setTimeout(() => { i++; draw(); }, ok ? 800 : 1500);
+        setTimeout(() => { i++; draw(); }, 380);
       }));
     };
     draw();
   });
+}
+
+/* ---- quiz with answer log, mistake bank, AI analysis ---- */
+function recordAnswer(q, chosen) {
+  S.mistakes = S.mistakes || {};
+  const ok = chosen === q.correct, m = S.mistakes[q.key];
+  if (!ok) S.mistakes[q.key] = { q: q.q, options: q.options, correct: q.correct, noteId: q.note.id, wrong: (m?.wrong || 0) + 1, right: 0, last: Date.now() };
+  else if (m) { m.right = (m.right || 0) + 1; if (m.right >= 2) delete S.mistakes[q.key]; }
+}
+function pageMistakesQuiz(scope) {
+  const list = mistakeList(scope);
+  if (!list.length) { toast('Brak błędów do poprawy 🎉'); return; }
+  pageQuiz(scope, { questions: list.map((m) => ({ q: m.q, options: m.options, correct: m.correct, note: m.note, key: m.key })), title: 'Poprawa błędów', mode: 'mist' });
+}
+function pageQuiz(scope, opts = {}) {
+  let base = opts.questions || allQuestions(scope);
+  if (!base.length) { toast('Brak pytań — dodaj i opracuj notatkę 📸'); return; }
+  const limit = opts.questions ? 15 : 10;
+  const make = (src) => src.slice().sort(() => Math.random() - 0.5).slice(0, limit).map(shuffleQ);
+  let qs = make(base), i = 0, score = 0, log = [];
+  const pg = openPage(opts.title || 'Quiz', (c) => {
+    const draw = () => {
+      if (i >= qs.length) return result();
+      const q = qs[i], s = subj(q.note.subjectId);
+      c.innerHTML = `<div style="display:flex;justify-content:space-between;font-size:13px;font-weight:650;color:var(--muted);margin-bottom:8px"><span>Pytanie ${i + 1} / ${qs.length}${s ? ' · ' + s.emoji + ' ' + esc(s.name) : ''}</span><span>${score} pkt</span></div>
+        <div class="progress"><i style="width:${(i / qs.length) * 100}%"></i></div>
+        <div class="qz-q">${esc(q.q)}</div>
+        ${q.options.map((o, k) => `<button class="qz-opt" data-k="${k}" style="animation-delay:${0.04 + k * 0.05}s"><span class="l">${'ABCD'[k]}</span>${esc(o)}</button>`).join('')}`;
+      let done = false;
+      $$('[data-k]', c).forEach((b) => (b.onclick = () => {
+        if (done) return; done = true;
+        const k = +b.dataset.k, ok = k === q.correct;
+        log.push({ ...q, chosen: k }); recordAnswer(q, k); save();
+        if (ok) { score++; b.classList.add('right'); haptic('success'); } else { b.classList.add('wrong'); $(`[data-k="${q.correct}"]`, c).classList.add('right'); haptic('warn'); }
+        setTimeout(() => { i++; draw(); }, ok ? 750 : 1500);
+      }));
+    };
+    const result = () => {
+      const p = score / qs.length; markActive();
+      const ids = [...new Set(qs.map((q) => q.note.id))];
+      S.quizLog = [...(S.quizLog || []), { date: Date.now(), noteIds: ids, score, total: qs.length, mode: opts.mode || 'quiz' }].slice(-200); save();
+      if (p >= 0.7) confetti(innerWidth / 2, innerHeight / 3);
+      const wrong = log.filter((x) => x.chosen !== x.correct);
+      const R = 80, L = 2 * Math.PI * R;
+      c.innerHTML = `<div class="result-ring"><svg viewBox="0 0 180 180"><circle cx="90" cy="90" r="${R}" stroke="var(--surface-2)" stroke-width="12" fill="none"/><circle id="rr" cx="90" cy="90" r="${R}" stroke="${readyColor(p)}" stroke-width="12" fill="none" stroke-linecap="round" stroke-dasharray="${L}" stroke-dashoffset="${L}" style="transition:stroke-dashoffset 1.4s var(--ease)"/></svg><div class="c"><div><b id="sc">0</b><span class="muted" style="font-size:13px;font-weight:600">z ${qs.length}</span></div></div></div>
+        <div style="text-align:center"><div class="serif" style="font-size:28px">${p === 1 ? 'Perfekcyjnie! 🏆' : p >= 0.7 ? 'Świetnie! 🎉' : p >= 0.4 ? 'Nieźle 👍' : 'Do powtórki 📚'}</div>
+          <p class="muted" style="margin:6px 0 0">${wrong.length ? `${wrong.length} ${plural(wrong.length, 'błąd', 'błędy', 'błędów')} — zobacz niżej, co poszło nie tak.` : 'Bez ani jednego błędu.'}</p></div>
+        <div class="btns" style="margin-top:20px">
+          ${wrong.length && hasAI() ? `<button class="btn" data-an>${ic('sparkle')} Przeanalizuj błędy z AI</button>` : ''}
+          ${wrong.length ? `<button class="btn ${hasAI() ? 'ghost' : ''}" data-rw>${ic('reset')} Powtórz tylko błędne (${wrong.length})</button>` : ''}
+          <button class="btn ghost" data-all>${ic('quiz')} ${opts.mode === 'mist' || opts.questions ? 'Quiz z całości' : 'Nowy quiz z całości'}</button>
+        </div>
+        ${!hasAI() && wrong.length ? '<p class="kbd-note" style="text-align:center">Dodaj klucz AI w Ustawieniach, a AI wyjaśni Ci każdy błąd.</p>' : ''}
+        ${log.length ? `<div class="section-h"><h3>Twoje odpowiedzi</h3></div><div class="ans-list">${log.map((x) => `<div class="ans ${x.chosen === x.correct ? 'ok' : 'bad'}"><b>${esc(x.q)}</b>${x.chosen === x.correct ? `<span class="aok">✓ ${esc(x.options[x.correct])}</span>` : `<span class="abad">✗ ${esc(x.options[x.chosen])}</span><span class="aok">✓ ${esc(x.options[x.correct])}</span>`}</div>`).join('')}</div>` : ''}`;
+      requestAnimationFrame(() => setTimeout(() => { $('#rr', c).style.strokeDashoffset = L * (1 - p); countUp($('#sc', c), score); }, 100));
+      $('[data-an]', c) && ($('[data-an]', c).onclick = () => analyzeFlow(wrong, ids));
+      $('[data-rw]', c) && ($('[data-rw]', c).onclick = () => { qs = make(wrong.map(({ chosen, ...q }) => q)); i = 0; score = 0; log = []; draw(); haptic(); });
+      $('[data-all]', c).onclick = () => { const src = opts.questions ? allQuestions({ noteIds: ids.flatMap((id) => [id, ...(S.notes.find((n) => n.id === id)?.sourceIds || [])]) }) : base; base = src.length ? src : base; qs = make(base); i = 0; score = 0; log = []; draw(); haptic(); };
+    };
+    draw();
+  });
+  return pg;
+}
+
+/* ---- AI: notatka z błędów ---- */
+async function analyzeFlow(wrong, noteIds) {
+  const src = S.notes.filter((n) => noteIds.includes(n.id));
+  const main = src.find((n) => n.kind !== 'mistakes') || src[0];
+  const sourceIds = [...new Set(src.flatMap((n) => (n.kind === 'mistakes' ? n.sourceIds || [] : [n.id])))];
+  let stepT;
+  const pg = openPage('Analizuję błędy', (c) => {
+    c.innerHTML = `<div class="empty" style="padding-top:30px"><div class="blob" style="animation:bob 2s ease-in-out infinite">🎯</div><h4>AI sprawdza Twoje błędy</h4><p>Wyjaśni każdą pomyłkę i przygotuje powtórkę.</p></div>
+      <div class="ai-steps" style="max-width:300px;margin:0 auto">${['Patrzę, co poszło nie tak', 'Piszę wyjaśnienia', 'Robię fiszki i nowe pytania'].map((x, k) => `<div data-st="${k}"><i></i>${x}</div>`).join('')}</div>`;
+  });
+  let k = 0; const tick = () => { $$('[data-st]', pg.el).forEach((d, j) => { d.classList.toggle('ok', j < k); d.classList.toggle('on', j === k); }); if (k < 2) k++; };
+  tick(); stepT = setInterval(tick, 2500);
+  try {
+    const context = src.map((n) => ({ tytul: n.title, streszczenie: n.ai?.summary, punkty: n.ai?.points, pojecia: n.ai?.terms }));
+    const res = await analyzeMistakes(aiCfg(), { topic: src.map((n) => n.title).join(', '), context, mistakes: wrong, instr: S.aiInstructions });
+    const s = subj(main?.subjectId);
+    const n = {
+      id: uid(), kind: 'mistakes', title: res.title || 'Błędy: ' + (main?.title || 'quiz'), subjectId: main?.subjectId || null, created: Date.now(), photos: [], status: 'ready', userText: '', sourceIds,
+      thumb: makeCover(res.emoji || '🎯', res.title || 'Moje błędy', '#ef4444'),
+      ai: { summary: res.summary || '', points: [], terms: res.terms || [], text: '', emoji: res.emoji || '🎯',
+        mistakes: (res.mistakes || []).filter((m) => m.q),
+        flashcards: (res.flashcards || []).filter((f) => f.q && f.a).map((f) => ({ id: uid(), q: f.q, a: f.a })),
+        quiz: (res.quiz || []).map(cleanQuiz).filter(Boolean) },
+    };
+    // the original wrong questions also belong to this note's practice set
+    wrong.forEach((w) => { if (!n.ai.quiz.some((q) => q.q === w.q)) n.ai.quiz.push({ q: w.q, options: w.options, correct: w.correct }); });
+    S.notes.unshift(n); markActive(); save();
+    clearInterval(stepT); haptic('success');
+    closePage(); setTimeout(() => { pageNote(n.id); confetti(innerWidth / 2, innerHeight / 3, 60); }, 320);
+    void s;
+  } catch (e) { clearInterval(stepT); closePage(); toast(e.message || 'Nie udało się'); haptic('warn'); }
+}
+
+/* ---- generated cover image (for notes without photos) ---- */
+function makeCover(emoji, title, color = S.accent) {
+  const c = document.createElement('canvas'); c.width = 640; c.height = 480;
+  const g = c.getContext('2d');
+  const gr = g.createLinearGradient(0, 0, 640, 480); gr.addColorStop(0, color); gr.addColorStop(1, '#0c0d10');
+  g.fillStyle = gr; g.fillRect(0, 0, 640, 480);
+  g.globalAlpha = 0.18; g.fillStyle = '#fff';
+  for (let y = 40; y < 480; y += 34) g.fillRect(0, y, 640, 2);
+  g.globalAlpha = 1;
+  g.font = '150px system-ui, "Apple Color Emoji", "Noto Color Emoji"'; g.textBaseline = 'middle'; g.fillText(emoji, 44, 170);
+  g.fillStyle = '#fff'; g.font = '800 46px "Inter Variable", system-ui, sans-serif';
+  const words = String(title).split(' '); let line = '', y = 330;
+  for (const w of words) { const t = line ? line + ' ' + w : w; if (g.measureText(t).width > 560) { g.fillText(line, 44, y); line = w; y += 54; if (y > 440) break; } else line = t; }
+  if (y <= 440) g.fillText(line, 44, y);
+  return c.toDataURL('image/jpeg', 0.8);
 }
 
 /* ---- focus timer (persists while app open; notification when backgrounded) ---- */
@@ -1332,7 +1581,7 @@ function viewMore(v) {
     <button class="row" data-go="settings"><div class="ic">${ic('gear')}</div><div class="main"><b>Ustawienia</b><span>wygląd, AI, powiadomienia</span></div><div class="end">${ic('chev')}</div></button>
     <button class="row" data-theme><div class="ic">${ic(document.documentElement.classList.contains('dark') ? 'sun' : 'moon')}</div><div class="main"><b>Tryb ${document.documentElement.classList.contains('dark') ? 'jasny' : 'ciemny'}</b><span>przełącz szybko</span></div></button>
   </div>
-  <p class="kbd-note" style="text-align:center;margin-top:30px">Zeszyt · v1.3</p>`;
+  <p class="kbd-note" style="text-align:center;margin-top:30px">Zeszyt · v1.4</p>`;
   bindCommon(v);
   $('[data-theme]', v).onclick = () => { S.theme = document.documentElement.classList.contains('dark') ? 'light' : 'dark'; save(); applyTheme(); haptic(); render(); };
 }

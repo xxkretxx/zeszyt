@@ -135,6 +135,24 @@ Zrób ${count} NOWYCH ${kind === 'cards' ? 'fiszek' : 'pytań quizowych (4 odpow
   return Array.isArray(j.items) ? j.items : [];
 }
 
+export async function analyzeMistakes(cfg, { topic, context, mistakes, instr }) {
+  const text = `Temat/notatki: ${topic}
+Kontekst z notatek ucznia: ${JSON.stringify(context).slice(0, 7000)}
+Uczeń rozwiązał quiz i POMYLIŁ SIĘ w tych pytaniach:
+${JSON.stringify(mistakes.map((m) => ({ pytanie: m.q, odpowiedzi: m.options, poprawna: m.options[m.correct], wybral: m.options[m.chosen] })))}
+
+Zrób notatkę z błędów po polsku. Dla KAŻDEGO błędu wyjaśnij prosto, dlaczego poprawna odpowiedź jest poprawna, czemu wybrana jest zła (jaki to typowy błąd myślenia) i daj krótki trik do zapamiętania.
+Potem dodaj fiszki do utrwalenia oraz NOWE pytania quizowe sprawdzające te same umiejętności (inaczej sformułowane, nie kopiuj pytań).
+Odpowiedz WYŁĄCZNIE JSON-em:
+{"title":"Błędy: krótki temat","emoji":"🎯","summary":"2-3 zdania: co ogólnie sprawia problem i na co uważać",
+ "mistakes":[{"q":"pytanie","yours":"odpowiedź ucznia","correct":"poprawna","why":"wyjaśnienie 2-3 zdania","tip":"krótki trik"}],
+ "terms":[{"term":"pojęcie","def":"definicja"}],
+ "flashcards":[{"q":"pytanie","a":"krótka odpowiedź"}],
+ "quiz":[{"q":"pytanie","options":["A","B","C","D"],"correct":0}]}
+Fiszek ${Math.min(10, mistakes.length * 2 + 2)}, pytań ${Math.min(10, mistakes.length * 2 + 2)} (correct = indeks 0-3, mieszaj pozycję).`;
+  return parseJSON(await run(cfg, [{ text }], 'Jesteś cierpliwym nauczycielem, który pomaga uczniowi zrozumieć jego błędy. Odpowiadasz wyłącznie poprawnym JSON-em.' + extra(instr), true, 6000));
+}
+
 export async function testKey(cfg) {
   await run(cfg, [{ text: 'Odpowiedz jednym słowem: ok' }], 'Test.', false, 10);
 }
