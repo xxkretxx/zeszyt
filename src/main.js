@@ -647,6 +647,7 @@ const thumbCache = {};
 function noteCardHTML(n) {
   const s = subj(n.subjectId);
   return `<button class="note-card ${n.status === 'pending' ? 'pending' : ''}" data-note="${n.id}">
+    <span class="nmore" data-nmore="${n.id}">${ic('more')}</span>
     <div class="img" style="background-image:url(${thumbURL(n)})"><div class="emo">${n.ai?.emoji || s?.emoji || '📝'}</div></div>
     <div class="b"><div class="t">${esc(n.title || 'Notatka')}</div><div class="d">${s ? `<span style="color:${s.color}">●</span> ${esc(s.name)} · ` : ''}${new Date(n.created).toLocaleDateString('pl-PL', { day: 'numeric', month: 'short' })}</div></div>
   </button>`;
@@ -657,7 +658,7 @@ function viewNotes(v) {
   const list = S.notes.filter((n) => (!noteSubj || n.subjectId === noteSubj) && (!q || (n.title + ' ' + (n.ai?.summary || '') + ' ' + (n.ai?.text || '') + ' ' + (n.userText || '')).toLowerCase().includes(q)));
   const subs = S.subjects.filter((s) => S.notes.some((n) => n.subjectId === s.id));
   v.innerHTML = `
-  <div class="title-row"><div><h1 class="serif">Notatki</h1><div class="sub">${S.notes.length} ${plural(S.notes.length, 'notatka', 'notatki', 'notatek')} · zdjęcie → AI → konkrety</div></div></div>
+  <div class="title-row"><div><h1 class="serif">Notatki</h1><div class="sub">${S.notes.length} ${plural(S.notes.length, 'notatka', 'notatki', 'notatek')} · przytrzymaj notatkę, żeby edytować</div></div></div>
   ${S.notes.length ? `<div class="searchbar">${ic('search')}<input id="nq" placeholder="Szukaj w notatkach…" value="${esc(noteQ)}"></div>
   ${subs.length > 1 ? `<div class="chips"><button class="chip ${!noteSubj ? 'on' : ''}" data-ns="">Wszystkie</button>${subs.map((s) => `<button class="chip ${noteSubj === s.id ? 'on' : ''}" data-ns="${s.id}">${s.emoji} ${esc(s.name)}</button>`).join('')}</div>` : ''}` : ''}
   ${!S.notes.length ? `<div class="empty"><div class="blob">📸</div><h4>Zrób zdjęcie zeszytu</h4><p>AI przeczyta Twoje notatki i zrobi z nich krótkie streszczenie, fiszki i quiz.</p><button class="btn small" style="margin:20px auto 0;width:auto" data-addn>${ic('camera')} Dodaj notatkę</button></div>` : ''}
@@ -849,6 +850,7 @@ function quizSheet(n, q, onDone) {
 const linkify = (t) => esc(String(t).replace(/\*\*(.+?)\*\*/g, '$1').replace(/^#+\s*/gm, '').replace(/^\s*[-*]\s+/gm, '• ')).replace(/\n/g, '<br>');
 let noteTab = 'sum';
 function pageNote(id) {
+  if (pages.some((p) => p.noteId === id)) return;
   const n = S.notes.find((x) => x.id === id); if (!n) return;
   noteTab = 'sum';
   const pg = openPage('', (c, o) => {
@@ -857,11 +859,11 @@ function pageNote(id) {
     $('.page-bar h2', o.el).textContent = o.title;
     const tabList = () => (n.kind === 'mistakes' ? [['mist', `Błędy ${n.ai.mistakes?.length || 0}`], ['ask', 'Zapytaj AI ✨'], ['cards', `Fiszki ${n.ai.flashcards.length}`], ['quiz', `Quiz ${n.ai.quiz.length}`], ['terms', `Pojęcia ${n.ai.terms.length}`]] : n.ai ? [['sum', 'Streszczenie'], ['ask', 'Zapytaj AI ✨'], ['cards', `Fiszki ${n.ai.flashcards.length}`], ['quiz', `Quiz ${n.ai.quiz.length}`], ['terms', `Pojęcia ${n.ai.terms.length}`], ['text', 'Tekst'], ['pics', 'Zdjęcia']] : [['pics', 'Zdjęcia'], ['own', 'Moje dopiski']]);
     const tabs = tabList();
-    const updTabs = () => { const t = Object.fromEntries(tabList()); $$('[data-t]', c).forEach((b) => (b.textContent = t[b.dataset.t] || b.textContent)); $('#nd-t', c) && ($('#nd-t', c).textContent = n.title); };
+    const updTabs = () => { const t = Object.fromEntries(tabList()); $$('[data-t]', c).forEach((b) => (b.textContent = t[b.dataset.t] || b.textContent)); $('#nd-t', c) && ($('#nd-t', c).firstChild.textContent = n.title); };
     if (!tabs.some((t) => t[0] === noteTab)) noteTab = tabs[0][0];
     c.innerHTML = `
       <div class="nd-hero" style="background-image:url(${thumbURL(n)})" data-pics>${n.photos.length ? `<span class="count">${n.photos.length} ${plural(n.photos.length, 'zdjęcie', 'zdjęcia', 'zdjęć')}</span>` : ''}<button class="count cam" data-thumb>${ic('image', 'style="width:14px;height:14px"')} zmień</button></div>
-      <div class="nd-title" id="nd-t">${esc(n.title)}</div>
+      <button class="nd-title" id="nd-t" data-rename>${esc(n.title)}<span class="pen">${ic('edit')}</span></button>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
         ${n.kind === 'mistakes' ? `<span class="ai-badge" style="color:var(--danger);background:color-mix(in srgb,var(--danger) 12%,transparent)">🎯 notatka z błędów</span>` : a ? `<span class="ai-badge">${ic('sparkle')} opracowane przez AI</span>` : ''}
         <span class="tag">${new Date(n.created).toLocaleDateString('pl-PL', { day: 'numeric', month: 'long' })}</span>
@@ -907,20 +909,41 @@ function pageNote(id) {
           ${n.chat.length ? `<button class="link" data-clear style="display:block;margin:14px auto 0;font-size:13px">Wyczyść rozmowę</button>` : ''}`;
         requestAnimationFrame(() => { const last = $('#chat .bub:last-child', pane); last && last.scrollIntoView({ block: 'nearest' }); });
       }
-      if (noteTab === 'pics') { pane.innerHTML = `<div class="photos" id="pics"></div>`; loadPics(); }
+      if (noteTab === 'pics') {
+        pane.innerHTML = `<div class="row2"><label class="btn ghost">${ic('camera')} Zrób zdjęcie<input type="file" accept="image/*" capture="environment" hidden data-addp></label><label class="btn ghost">${ic('image')} Z galerii<input type="file" accept="image/*" multiple hidden data-addp></label></div>
+          ${n.photosChanged && hasAI() && n.kind !== 'mistakes' && n.photos.length ? `<div class="card redo-card"><div><b>Zdjęcia się zmieniły</b><span>Opracuj notatkę od nowa, żeby AI uwzględniło zmiany.</span></div><button class="btn small" data-redo>${ic('sparkle')} Opracuj</button></div>` : ''}
+          <p class="kbd-note" style="margin:12px 2px">Dotknij zdjęcia, żeby je powiększyć, zamienić, ustawić jako miniaturkę albo usunąć.</p>
+          <div class="photos" id="pics">${n.photos.length ? '' : '<p class="muted" style="grid-column:span 2;text-align:center;padding:20px 0">Brak zdjęć w tej notatce.</p>'}</div>`;
+        loadPics();
+      }
       if (noteTab === 'own') pane.innerHTML = `<textarea class="inp" id="own" style="min-height:200px" placeholder="Dopisz coś do tej notatki…">${esc(n.userText || '')}</textarea>`;
       bindPane();
     };
     const loadPics = async () => {
       const box = $('#pics', pane); if (!box) return;
-      for (const pid of n.photos) { const d = await photoGet(pid); if (d) { const im = new Image(); im.src = d; im.style.animation = 'rise .4s var(--ease) both'; im.onclick = () => viewer(d); box.append(im); } }
+      for (const [i, pid] of n.photos.entries()) {
+        const d = await photoGet(pid); if (!d || !box.isConnected) continue;
+        const w = document.createElement('button'); w.className = 'ph'; w.style.animationDelay = i * 0.04 + 's';
+        w.innerHTML = `<img src="${d}" alt=""><span class="no">${i + 1}</span>`;
+        w.onclick = () => photoMenu(n, pid, d, () => { drawPane(); refreshHero(); });
+        box.append(w);
+      }
     };
+    const refreshHero = () => { const h = $('.nd-hero', c); if (h) h.style.backgroundImage = `url(${thumbURL(n)})`; const cnt = $('.nd-hero .count:not(.cam)', c); if (cnt) cnt.textContent = `${n.photos.length} ${plural(n.photos.length, 'zdjęcie', 'zdjęcia', 'zdjęć')}`; };
     const bindPane = () => {
       $('[data-learn]', pane) && ($('[data-learn]', pane).onclick = () => pageFlashcards(n.id));
       $('[data-quiz]', pane) && ($('[data-quiz]', pane).onclick = () => pageQuiz(n.id));
       $('[data-mk]', pane) && ($('[data-mk]', pane).onclick = () => pageMistakesQuiz(n.id));
       $('[data-copy]', pane) && ($('[data-copy]', pane).onclick = async () => { try { await navigator.clipboard.writeText(a.text); toast('Skopiowano'); } catch { toast('Nie udało się skopiować'); } });
       const own = $('#own', pane); if (own) own.oninput = () => { n.userText = own.value; save(); };
+      $$('[data-addp]', pane).forEach((inp) => (inp.onchange = async (e) => {
+        const files = [...e.target.files]; if (!files.length) return;
+        toast('Dodaję zdjęcia…');
+        for (const f of files) { try { const pid = uid(); await photoSet(pid, await compress(f, 1568, 0.82)); n.photos.push(pid); } catch { toast('Nie udało się wczytać zdjęcia'); } }
+        if (!n.thumb && n.photos[0]) n.thumb = await toThumb(await photoGet(n.photos[0]));
+        n.photosChanged = true; save(); haptic('success'); toast(`Dodano ${files.length} ${plural(files.length, 'zdjęcie', 'zdjęcia', 'zdjęć')} ✓`); drawPane(); refreshHero();
+      }));
+      $('[data-redo]', pane) && ($('[data-redo]', pane).onclick = () => { n.photosChanged = false; processNote(n, null, true); });
       $$('[data-s]', pane).forEach((b) => (b.onclick = () => {
         const k = b.dataset.s;
         if (k === 'read') return $('#mist-list', pane).scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -986,8 +1009,10 @@ function pageNote(id) {
     $('[data-pics]', c).onclick = async (e) => { if (e.target.closest('[data-thumb]')) return thumbSheet(n, () => o.refresh()); const d = n.photos[0] ? await photoGet(n.photos[0]) : n.thumb; d && viewer(d); };
     $('[data-retry]', c) && ($('[data-retry]', c).onclick = () => { if (!hasAI()) return toast('Najpierw dodaj klucz AI w Ustawieniach'); processNote(n, null, true); });
     $('[data-edit]', c).onclick = () => editNoteSheet(n);
+    $('[data-rename]', c).onclick = () => renameSheet(n, () => o.refresh());
     drawPane();
-  });
+  }, { html: `<button class="iconbtn" data-action aria-label="Opcje">${ic('more')}</button>`, fn: () => noteMenu(n, true) });
+  pg.noteId = n.id;
   pg.onClose = () => render();
 }
 function viewer(src) {
@@ -1041,6 +1066,93 @@ function thumbSheet(n, onDone) {
     $('#th-gen', sh).onclick = () => set(makeCover(n.ai?.emoji || subj(n.subjectId)?.emoji || '📝', n.title, subj(n.subjectId)?.color || S.accent));
   });
 }
+function renameSheet(n, onDone) {
+  openSheet(`<h3>Zmień nazwę</h3>
+    <div class="field"><input class="inp big" id="rn" value="${esc(n.title)}" maxlength="80" enterkeyhint="done"></div>
+    <button class="btn" id="rn-s">${ic('check')} Zapisz</button>`,
+  (sh, close) => {
+    const inp = $('#rn', sh);
+    setTimeout(() => { inp.focus(); inp.select(); }, 400);
+    const go = () => { const t = inp.value.trim(); if (!t) return haptic('warn'); n.title = t; save(); haptic('success'); close(); onDone ? onDone() : refreshAll(); toast('Zmieniono nazwę ✓'); };
+    $('#rn-s', sh).onclick = go;
+    inp.onkeydown = (e) => e.key === 'Enter' && go();
+  });
+}
+function deleteNote(n, fromPage) {
+  const i = S.notes.indexOf(n); if (i < 0) return;
+  S.notes.splice(i, 1); save(); haptic('medium');
+  if (fromPage) closePage(); else refreshAll();
+  let undone = false;
+  toast(`Usunięto „${n.title}”`, 'Cofnij', () => { undone = true; S.notes.splice(i, 0, n); save(); refreshAll(); });
+  setTimeout(() => { if (!undone) n.photos.forEach((p) => photoDel(p)); }, 6000);
+}
+function noteMenu(n, fromPage) {
+  openSheet(`<div class="menu-h"><span style="background-image:url(${thumbURL(n)})"></span><div><b>${esc(n.title)}</b><small>${esc(subj(n.subjectId)?.name || 'Notatka')} · ${n.photos.length} ${plural(n.photos.length, 'zdjęcie', 'zdjęcia', 'zdjęć')}</small></div></div>
+    <div class="list menu">
+      ${fromPage ? '' : `<button class="row" data-m="open"><div class="ic">${ic('note')}</div><div class="main"><b>Otwórz</b></div></button>`}
+      <button class="row" data-m="rename"><div class="ic">${ic('edit')}</div><div class="main"><b>Zmień nazwę</b></div></button>
+      <button class="row" data-m="edit"><div class="ic">${ic('book')}</div><div class="main"><b>Zmień przedmiot</b></div></button>
+      <button class="row" data-m="thumb"><div class="ic">${ic('image')}</div><div class="main"><b>Zdjęcie główne (miniaturka)</b></div></button>
+      <button class="row" data-m="photos"><div class="ic">${ic('camera')}</div><div class="main"><b>Zdjęcia notatki</b><span>dodaj, zamień, usuń</span></div></button>
+      ${hasAI() && n.kind !== 'mistakes' && n.photos.length ? `<button class="row" data-m="redo"><div class="ic">${ic('sparkle')}</div><div class="main"><b>Opracuj ponownie z AI</b></div></button>` : ''}
+    </div>
+    <div class="list menu" style="margin-top:12px"><button class="row danger" data-m="del"><div class="ic">${ic('trash')}</div><div class="main"><b>Usuń notatkę</b><span>możesz cofnąć przez kilka sekund</span></div></button></div>`,
+  (sh, close) => {
+    $$('[data-m]', sh).forEach((b) => (b.onclick = () => {
+      const m = b.dataset.m; close();
+      setTimeout(() => {
+        const page = pages.find((p) => p.noteId === n.id);
+        if (m === 'open') pageNote(n.id);
+        if (m === 'rename') renameSheet(n, page ? () => page.refresh() : null);
+        if (m === 'edit') editNoteSheet(n);
+        if (m === 'thumb') thumbSheet(n, page ? () => page.refresh() : refreshAll);
+        if (m === 'photos') { noteTab = 'pics'; if (page) page.refresh(); else { pageNote(n.id); noteTab = 'pics'; pages.at(-1)?.refresh(); } }
+        if (m === 'redo') { if (page) closePage(); processNote(n, null, true); }
+        if (m === 'del') confirmSheet(`Usunąć „${esc(n.title)}”?`, 'Usunie notatkę razem ze zdjęciami, fiszkami i quizem.', 'Usuń notatkę', () => deleteNote(n, !!page));
+      }, 280);
+    }));
+  });
+}
+function confirmSheet(title, text, label, fn) {
+  openSheet(`<h3 style="font-size:24px">${title}</h3><p class="muted" style="margin:-8px 0 20px;line-height:1.5">${text}</p>
+    <div class="btns"><button class="btn danger solid" id="cf-y">${ic('trash')} ${label}</button><button class="btn ghost" id="cf-n">Anuluj</button></div>`,
+  (sh, close) => { $('#cf-y', sh).onclick = () => { close(); fn(); }; $('#cf-n', sh).onclick = close; });
+}
+function photoMenu(n, pid, data, onDone) {
+  const idx = n.photos.indexOf(pid);
+  openSheet(`<div class="ph-prev"><img src="${data}" alt=""></div>
+    <div class="list menu">
+      <button class="row" data-m="view"><div class="ic">${ic('search')}</div><div class="main"><b>Powiększ</b></div></button>
+      <label class="row"><div class="ic">${ic('image')}</div><div class="main"><b>Zamień na inne z galerii</b></div><input type="file" accept="image/*" hidden data-rep></label>
+      <label class="row"><div class="ic">${ic('camera')}</div><div class="main"><b>Zamień — zrób nowe zdjęcie</b></div><input type="file" accept="image/*" capture="environment" hidden data-rep></label>
+      <button class="row" data-m="thumb"><div class="ic">${ic('star')}</div><div class="main"><b>Ustaw jako miniaturkę</b></div></button>
+      ${idx > 0 ? `<button class="row" data-m="first"><div class="ic">${ic('upload')}</div><div class="main"><b>Przenieś na początek</b></div></button>` : ''}
+    </div>
+    <div class="list menu" style="margin-top:12px"><button class="row danger" data-m="del"><div class="ic">${ic('trash')}</div><div class="main"><b>Usuń to zdjęcie</b></div></button></div>`,
+  (sh, close) => {
+    const done = (msg) => { n.photosChanged = true; save(); haptic('success'); close(); onDone(); msg && toast(msg); };
+    $('[data-m="view"]', sh).onclick = () => { close(); setTimeout(() => viewer(data), 250); };
+    $$('[data-rep]', sh).forEach((inp) => (inp.onchange = async (e) => {
+      const f = e.target.files[0]; if (!f) return;
+      try {
+        const d = await compress(f, 1568, 0.82), nid2 = uid();
+        await photoSet(nid2, d); n.photos[n.photos.indexOf(pid)] = nid2; photoDel(pid);
+        if (idx === 0) n.thumb = await toThumb(d);
+        done('Zamieniono zdjęcie ✓');
+      } catch { toast('Nie udało się wczytać zdjęcia'); }
+    }));
+    $('[data-m="thumb"]', sh).onclick = async () => { n.thumb = await toThumb(data); save(); haptic('success'); close(); onDone(); toast('Ustawiono miniaturkę ✓'); };
+    $('[data-m="first"]', sh) && ($('[data-m="first"]', sh).onclick = () => { n.photos.splice(idx, 1); n.photos.unshift(pid); done('Przeniesiono na początek'); });
+    $('[data-m="del"]', sh).onclick = () => {
+      close();
+      setTimeout(() => confirmSheet('Usunąć to zdjęcie?', 'Opracowanie AI (streszczenie, fiszki) zostanie — możesz potem opracować notatkę od nowa.', 'Usuń zdjęcie', async () => {
+        n.photos = n.photos.filter((x) => x !== pid); photoDel(pid);
+        if (idx === 0) n.thumb = n.photos[0] ? await toThumb(await photoGet(n.photos[0])) : makeCover(n.ai?.emoji || '📝', n.title, subj(n.subjectId)?.color || S.accent);
+        n.photosChanged = true; save(); haptic('medium'); onDone(); toast('Usunięto zdjęcie');
+      }), 280);
+    };
+  });
+}
 function editNoteSheet(n) {
   let sid = n.subjectId;
   openSheet(`<h3>Edytuj notatkę</h3>
@@ -1054,14 +1166,10 @@ function editNoteSheet(n) {
     </div>`,
   (sh, close) => {
     $$('#e-s [data-v]', sh).forEach((b) => (b.onclick = () => { $$('#e-s [data-v]', sh).forEach((x) => x.classList.remove('on')); b.classList.add('on'); sid = b.dataset.v; }));
-    $('#e-save', sh).onclick = () => { n.title = $('#e-t', sh).value.trim() || n.title; n.subjectId = sid; save(); close(); refreshAll(); };
+    $('#e-save', sh).onclick = () => { n.title = $('#e-t', sh).value.trim() || n.title; n.subjectId = sid; save(); close(); refreshAll(); toast('Zapisano ✓'); };
     $('#e-th', sh).onclick = () => { close(); setTimeout(() => thumbSheet(n, refreshAll), 300); };
     $('#e-redo', sh) && ($('#e-redo', sh).onclick = () => { close(); closePage(); processNote(n, null, true); });
-    let armed = false;
-    $('#e-del', sh).onclick = (e) => {
-      if (!armed) { armed = true; e.currentTarget.innerHTML = `${ic('trash')} Na pewno? Kliknij jeszcze raz`; haptic('warn'); return; }
-      S.notes = S.notes.filter((x) => x !== n); n.photos.forEach((p) => photoDel(p)); save(); close(); closePage(); toast('Notatka usunięta');
-    };
+    $('#e-del', sh).onclick = () => { close(); setTimeout(() => confirmSheet(`Usunąć „${esc(n.title)}”?`, 'Usunie notatkę razem ze zdjęciami, fiszkami i quizem.', 'Usuń notatkę', () => deleteNote(n, pages.some((p) => p.noteId === n.id))), 280); };
   });
 }
 
@@ -1606,14 +1714,21 @@ function viewMore(v) {
     <button class="row" data-go="settings"><div class="ic">${ic('gear')}</div><div class="main"><b>Ustawienia</b><span>wygląd, AI, powiadomienia</span></div><div class="end">${ic('chev')}</div></button>
     <button class="row" data-theme><div class="ic">${ic(document.documentElement.classList.contains('dark') ? 'sun' : 'moon')}</div><div class="main"><b>Tryb ${document.documentElement.classList.contains('dark') ? 'jasny' : 'ciemny'}</b><span>przełącz szybko</span></div></button>
   </div>
-  <p class="kbd-note" style="text-align:center;margin-top:30px">Zeszyt · v1.5</p>`;
+  <p class="kbd-note" style="text-align:center;margin-top:30px">Zeszyt · v1.6</p>`;
   bindCommon(v);
   $('[data-theme]', v).onclick = () => { S.theme = document.documentElement.classList.contains('dark') ? 'light' : 'dark'; save(); applyTheme(); haptic(); render(); };
 }
 function bindCommon(root) {
   $$('[data-go]', root).forEach((b) => (b.onclick = () => ({ timetable: pageTimetable, grades: pageGrades, subjects: pageSubjects, settings: pageSettings, focus: pageFocus })[b.dataset.go]()));
   $$('[data-tabgo]', root).forEach((b) => (b.onclick = () => go(b.dataset.tabgo)));
-  $$('[data-note]', root).forEach((b) => (b.onclick = () => pageNote(b.dataset.note)));
+  $$('[data-note]', root).forEach((b) => {
+    const n = S.notes.find((x) => x.id === b.dataset.note); if (!n) return;
+    let lp = null, fired = false;
+    b.onclick = (e) => { if (fired) { fired = false; return; } if (e.target.closest('[data-nmore]')) return noteMenu(n); pageNote(n.id); };
+    b.addEventListener('touchstart', () => { fired = false; lp = setTimeout(() => { fired = true; haptic('medium'); noteMenu(n); }, 480); }, { passive: true });
+    ['touchend', 'touchmove', 'touchcancel'].forEach((ev) => b.addEventListener(ev, () => clearTimeout(lp), { passive: true }));
+    b.addEventListener('contextmenu', (e) => e.preventDefault());
+  });
   bindRems(root);
 }
 function pageSettings() {
